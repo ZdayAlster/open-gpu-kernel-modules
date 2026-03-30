@@ -3182,6 +3182,15 @@ static NvBool SyncOneEvoChannel(
     NvU64 startTime = 0;
     const NvU32 timeout = 2000000; // microseconds
 
+    /*
+     * WBX: If the GPU is excluded due to AER fatal error, bail out.
+     * The loop below calls IsChannelMethodPending which issues RM control
+     * calls that will fail on a frozen GPU.
+     */
+    if (pDevEvo->excluded) {
+        return FALSE;
+    }
+
     do {
         if (!pDevEvo->hal->IsChannelMethodPending(pDevEvo, pChan,
                                                   sd, &isMethodPending)) {
@@ -3190,6 +3199,13 @@ static NvBool SyncOneEvoChannel(
 
         if (!isMethodPending) {
             break;
+        }
+
+        /*
+         * WBX: Re-check excluded inside the loop.
+         */
+        if (pDevEvo->excluded) {
+            return FALSE;
         }
 
         if (nvExceedsTimeoutUSec(pDevEvo, &startTime, timeout)) {
@@ -3250,6 +3266,15 @@ NvBool nvRMIdleBaseChannel(NVDevEvoPtr pDevEvo, NvU32 head, NvU32 sd,
     NvBool ret = TRUE;
 
     *stoppedBase = FALSE;
+
+    /*
+     * WBX: If the GPU is excluded due to AER fatal error, bail out.
+     * The loop below calls IsChannelMethodPending which issues RM control
+     * calls that will fail on a frozen GPU.
+     */
+    if (pDevEvo->excluded) {
+        return FALSE;
+    }
 
     do {
         if (!pDevEvo->hal->IsChannelMethodPending(pDevEvo,

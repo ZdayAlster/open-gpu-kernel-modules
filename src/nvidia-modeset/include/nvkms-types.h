@@ -1179,9 +1179,16 @@ typedef struct _NVEvoDevRec {
 
     /*
      * WBX: Set when the GPU is excluded due to a fatal PCIe AER error.
-     * When set, nvEvoMakeRoom() and nvEvoPollForEmptyChannel() will bail
+     * When set, all DMA push operations and channel state queries will bail
      * out immediately instead of spinning forever trying to read GPU
      * registers from a frozen device.
+     *
+     * Protected code paths:
+     *   nvEvoMakeRoom(), nvEvoPollForEmptyChannel(), nvDmaKickoffEvo()
+     *   nvEvoPollForNoMethodPending(), SyncOneEvoChannel()
+     *   nvRMIdleBaseChannel(), GetChannelState(), PollForChannelIdle()
+     *   nvEvoIsCoreNotifierComplete(), nvEvoWaitForCoreNotifier()
+     *   nvEvoWaitForCRC32Notifier(), WaitForFreeSpace()
      *
      * Set by nvKmsKapiRemoveExcluded() → DRM removeExcluded callback chain.
      * Not cleared until the device is fully removed and re-probed.

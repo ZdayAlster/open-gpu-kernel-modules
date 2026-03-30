@@ -6382,6 +6382,16 @@ static NvBool GetChannelState(NVDevEvoPtr pDevEvo,
     NVC370_CTRL_CMD_GET_CHANNEL_INFO_PARAMS info = { };
     NvU32 ret;
 
+    /*
+     * WBX: If the GPU is excluded due to AER fatal error, bail out
+     * immediately.  The nvRmApiControl call below issues an RM control
+     * command that will fail on a frozen GPU, producing a storm of
+     * "Failed to query display engine channel state" errors.
+     */
+    if (pDevEvo->excluded) {
+        return FALSE;
+    }
+
     info.base.subdeviceIndex = sd;
     info.channelClass = pChan->hwclass;
     info.channelInstance = pChan->instance;
@@ -6609,6 +6619,15 @@ static NvBool PollForChannelIdle(
     const NvU32 timeout = 2000000; // 2 seconds
     NvU64 startTime = 0;
     NvBool isMethodPending = TRUE;
+
+    /*
+     * WBX: If the GPU is excluded due to AER fatal, bail out immediately.
+     * The IsChannelMethodPending call below goes through GetChannelState
+     * which issues RM control calls on a frozen GPU.
+     */
+    if (pDevEvo->excluded) {
+        return FALSE;
+    }
 
     do {
         if (!nvEvoIsChannelMethodPendingC3(pDevEvo, pChannel, sd,

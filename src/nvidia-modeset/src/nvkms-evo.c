@@ -9305,6 +9305,15 @@ NvBool nvEvoPollForNoMethodPending(NVDevEvoPtr pDevEvo,
                                    NvU64 *pStartTime,
                                    const NvU32 timeout)
 {
+    /*
+     * WBX: If the GPU is excluded due to AER fatal error, bail out
+     * immediately.  The loop below calls IsChannelMethodPending which
+     * issues RM control calls that will fail on a frozen GPU.
+     */
+    if (pDevEvo->excluded) {
+        return FALSE;
+    }
+
     do
     {
         NvBool isMethodPending = TRUE;
@@ -9315,6 +9324,14 @@ NvBool nvEvoPollForNoMethodPending(NVDevEvoPtr pDevEvo,
                                     sd,
                                     &isMethodPending) && !isMethodPending) {
             break;
+        }
+
+        /*
+         * WBX: Re-check excluded inside the loop.  AER error may be detected
+         * while this thread is already polling.
+         */
+        if (pDevEvo->excluded) {
+            return FALSE;
         }
 
         if (nvExceedsTimeoutUSec(pDevEvo, pStartTime, timeout)) {
