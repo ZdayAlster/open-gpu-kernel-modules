@@ -2669,8 +2669,10 @@ nv_pci_error_detected(struct pci_dev *pdev, pci_channel_state_t state)
         nvidia_modeset_remove_excluded(nv->gpu_id);
 
         /* 通知 UVM 层只标记这张 GPU broken，
-         * 而不是设置全局 fatal_error */
-        nvUvmInterfaceGpuBrokenAer(pdev);
+         * 而不是设置全局 fatal_error。
+         * 使用 nv_get_cached_uuid 而非 nvidia_get_uuid_by_pci_dev，
+         * 避免获取 nv_linux_devices_lock（可能被 persistenced 等持有）。 */
+        nvUvmInterfaceGpuBrokenAerByNv(nv);
 
         nv_printf(NV_DBG_ERRORS,
                   "NVRM: GPU %04x:%02x:%02x.%x  PCI channel io frozen, marking as excluded, modeset removed\n",
@@ -2697,8 +2699,9 @@ nv_pci_error_detected(struct pci_dev *pdev, pci_channel_state_t state)
 	    pci_disable_device(pdev);
 
         /* 通知 UVM 层只标记这张 GPU broken，
-         * 而不是设置全局 fatal_error */
-        nvUvmInterfaceGpuBrokenAer(pdev);
+         * 而不是设置全局 fatal_error。
+         * 使用 nv_get_cached_uuid 避免嵌套锁。 */
+        nvUvmInterfaceGpuBrokenAerByNv(nv);
         UNLOCK_NV_LINUX_DEVICES();
 
         nv_printf(NV_DBG_ERRORS,

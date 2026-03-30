@@ -2061,12 +2061,20 @@ static void nv_stop_device(nv_state_t *nv, nvidia_stack_t *sp)
      * GSP firmware to time out (up to ~110s per RPC), which is exactly why
      * `systemctl stop nvidia-persistenced` hangs after an AER injection.
      *
-     * Three conditions cover the GPU-lost cases:
+     * Four conditions cover the GPU-lost cases:
      *   nv->removed                 - set by nvidia_pci_remove() after AER
      *                                 pci_channel_io_perm_failure or hot-unplug
      *   NV_FLAG_IN_SURPRISE_REMOVAL - set by the eGPU surprise-removal path
      *   NV_FLAG_EXCLUDE             - set by our AER error_detected handler for
      *                                 pci_channel_io_frozen (fatal AER, Xid 79)
+     *   pdev->error_state           - checked as a race-condition guard:
+     *                                 if AER error_detected and nvidia_dev_put
+     *                                 race, EXCLUDE may not be set yet when
+     *                                 nv_stop_device runs.  But the kernel has
+     *                                 already set pdev->error_state to frozen
+     *                                 before calling error_detected, so checking
+     *                                 it here catches the race without depending
+     *                                 on the flag ordering.
      *
      * In all these cases the hardware is inaccessible. We still need to stop
      * the bottom-half/queue kthreads to avoid further GPU access attempts, but
@@ -2074,7 +2082,8 @@ static void nv_stop_device(nv_state_t *nv, nvidia_stack_t *sp)
      * would block on GSP RPC responses that will never come.
      */
     if (nv->removed || NV_IS_DEVICE_IN_SURPRISE_REMOVAL(nv) ||
-        (nv->flags & NV_FLAG_EXCLUDE))
+        (nv->flags & NV_FLAG_EXCLUDE) ||
+        (dev_is_pci(nvl->dev) && nvl->pci_dev->error_state != pci_channel_io_normal))
     {
         NV_DEV_PRINTF(NV_DBG_WARNINGS, nv,
             "GPU lost/excluded, skipping RM teardown to avoid RPC timeout\n");

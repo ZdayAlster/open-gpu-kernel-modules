@@ -1752,18 +1752,16 @@ NV_STATUS nvUvmInterfaceCslLogEncryption(UvmCslContext *uvmCslContext,
 EXPORT_SYMBOL(nvUvmInterfaceCslLogEncryption);
 
 /*
- * Notify UVM that a GPU has encountered a fatal AER error.
+ * Internal version of nvUvmInterfaceGpuBrokenAer that accepts a pre-obtained UUID.
+ * This version avoids the need to traverse the global nv_linux_devices list,
+ * preventing potential deadlocks when called from AER handler context.
  *
- * Safe to call from PCI AER error_detected callback context (atomic).
- * Follows the same pattern as nv_uvm_drain_P2P: looks up the UVM events
- * callback table and invokes the registered handler.
+ * Must not be called with nv_linux_devices_lock held.
  */
-void nvUvmInterfaceGpuBrokenAer(struct pci_dev *pdev)
+static void nvUvmInterfaceGpuBrokenAerByUuid(const NvU8 *uuid)
 {
     struct UvmEventsLinux *events;
-    const NvU8 *uuid;
 
-    uuid = nvidia_get_uuid_by_pci_dev(pdev);
     if (uuid == NULL)
         return;
 
@@ -1776,7 +1774,36 @@ void nvUvmInterfaceGpuBrokenAer(struct pci_dev *pdev)
     if (events && events->gpuBrokenAer)
         events->gpuBrokenAer((const NvProcessorUuid *)uuid);
 }
+
+/*
+ * Notify UVM that a GPU has encountered a fatal AER error.
+ *
+ * Safe to call from PCI AER error_detected callback context (atomic).
+ * Follows the same pattern as nv_uvm_drain_P2P: looks up the UVM events
+ * callback table and invokes the registered handler.
+ */
+void nvUvmInterfaceGpuBrokenAer(struct pci_dev *pdev)
+{
+    const NvU8 *uuid;
+
+    uuid = nvidia_get_uuid_by_pci_dev(pdev);
+    nvUvmInterfaceGpuBrokenAerByUuid(uuid);
+}
 EXPORT_SYMBOL(nvUvmInterfaceGpuBrokenAer);
+
+/*
+ * WBX: AER error_detected safe version that doesn't need to traverse
+ * the global device list. Called with nv (already obtained) when pci_dev
+ * and nv are available.
+ */
+void nvUvmInterfaceGpuBrokenAerByNv(nv_state_t *nv)
+{
+    const NvU8 *uuid;
+
+    uuid = nv_get_cached_uuid(nv);
+    nvUvmInterfaceGpuBrokenAerByUuid(uuid);
+}
+EXPORT_SYMBOL(nvUvmInterfaceGpuBrokenAerByNv);
 
 #else // NV_UVM_ENABLE
 

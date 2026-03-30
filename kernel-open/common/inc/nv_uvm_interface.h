@@ -1945,4 +1945,8 @@ NV_STATUS nvUvmInterfaceCslLogEncryption(UvmCslContext *uvmCslContext,
 */
 void nvUvmInterfaceGpuBrokenAer(struct pci_dev *pci_dev);
 
+/* WBX: Lock-free version for use in AER error_detected context.
+ * Uses nv_get_cached_uuid() instead of traversing nv_linux_devices list. */
+void nvUvmInterfaceGpuBrokenAerByNv(nv_state_t *nv);
+
 #endif // _NV_UVM_INTERFACE_H_
