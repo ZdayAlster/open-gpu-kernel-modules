@@ -2093,6 +2093,49 @@ static void nv_stop_device(nv_state_t *nv, nvidia_stack_t *sp)
         goto skip_rm_teardown;
     }
 
+    /*
+     * Detect GPU lost from bus without AER notification.
+     *
+     * Some GPU failures (e.g., spontaneous PCIe link loss, firmware crash
+     * without AER, or internal Xid that doesn't trigger the AER path) will
+     * cause the GPU to become inaccessible but none of the flags above are
+     * set.  In that case, pci_device_is_present() will return false because
+     * the PCI config space reads return 0xFFFFFFFF.
+     *
+     * Without this check, nv_stop_device() would still call
+     * rm_disable_adapter() / nv_shutdown_adapter(), which issue GSP RPCs
+     * that time out (~110s each), causing:
+     *   - systemctl stop nvidia-persistenced hanging
+     *   - Container restart blocking for minutes
+     *   - Cascading failures on other GPUs due to UVM fatal_error
+     *
+     * When the GPU is physically absent, mark it as excluded so that
+     * nvidia_read_card_info() and subsequent open attempts skip it.
+     */
+    if (dev_is_pci(nvl->dev) && !pci_device_is_present(nvl->pci_dev))
+    {
+        NV_DEV_PRINTF(NV_DBG_WARNINGS, nv,
+            "GPU not present on PCI bus during device stop, "
+            "skipping RM teardown and marking as excluded\n");
+
+        LOCK_NV_LINUX_DEVICES();
+        nv->flags |= NV_FLAG_EXCLUDE;
+        UNLOCK_NV_LINUX_DEVICES();
+
+        /* Stop kthreads so they no longer attempt to access the lost GPU */
+        if (!(nv->flags & NV_FLAG_PERSISTENT_SW_STATE))
+        {
+            nv_acpi_unregister_notifier(nvl);
+            nv_kthread_q_stop(&nvl->bottom_half_q);
+            if (nv->queue != NULL)
+            {
+                nv->queue = NULL;
+                nv_kthread_q_stop(&nvl->queue.nvk);
+            }
+        }
+        goto skip_rm_teardown;
+    }
+
     /* Adapter is already shutdown as part of nvidia_pci_remove */
     if (!nv->removed)
     {
