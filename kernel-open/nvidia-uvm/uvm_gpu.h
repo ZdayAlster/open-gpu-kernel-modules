@@ -926,11 +926,36 @@ struct uvm_gpu_struct
 
     // Force pushbuffer's GPU VA to be >= 1TB; used only for testing purposes.
     bool uvm_test_force_upper_pushbuffer_segment;
+    
+    //wbx/WBX Per-GPU broken/isolated state for AER fault isolation. 
+    //When set (non-NV_OK), this GPU's channel operations return errors, 
+    // but other GPUs are NOT affected (unlike g_uvm_global.fatal_error). 
+    // Set by uvm_gpu_set_broken(), read by uvm_gpu_is_broken(). 
+    atomic_t broken;
 
     // Used to protect allocation of p2p_mem and assignment of the page
     // zone_device_data fields.
     uvm_mutex_t device_p2p_lock;
 };
+
+//WBX/wbx---start
+static inline NV_STATUS uvm_gpu_get_broken_status(uvm_gpu_t *gpu) 
+{
+    return (NV_STATUS)atomic_read(&gpu->broken); 
+} 
+static inline bool uvm_gpu_is_broken(uvm_gpu_t *gpu) 
+{
+    return uvm_gpu_get_broken_status(gpu) != NV_OK; 
+} 
+// Mark a GPU as broken. Unlike uvm_global_set_fatal_error, this only 
+// affects operations on the specific GPU, not the entire UVM driver. 
+// Safe to call from atomic context.
+static inline void uvm_gpu_set_broken(uvm_gpu_t *gpu, NV_STATUS error) 
+{
+    UVM_ASSERT(error != NV_OK); 
+    atomic_cmpxchg(&gpu->broken, (int)NV_OK, (int)error); 
+}
+//wbx/WBX---end
 
 typedef struct
 {

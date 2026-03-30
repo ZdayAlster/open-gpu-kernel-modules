@@ -176,6 +176,10 @@ NV_STATUS uvm_suspend_and_drainP2P_entry(const NvProcessorUuid *uuid);
 // Resume P2P traffic on the GPU's channels
 NV_STATUS uvm_resumeP2P_entry(const NvProcessorUuid *uuid);
 
+// Mark the GPU as broken due to AER fatal error.
+// Safe to call from atomic/interrupt context (uses spinlock, not mutex).
+void uvm_gpu_broken_aer_entry(const NvProcessorUuid *uuid);
+
 // Add parent GPU to the global table.
 //
 // LOCKING: requires that you hold the global lock and gpu_table_lock
@@ -278,6 +282,20 @@ static NV_STATUS uvm_global_get_status(void)
 {
     return atomic_read(&g_uvm_global.fatal_error);
 }
+
+//Added by WBX start
+// Check status for a specific GPU. Returns: 
+// - g_uvm_global.fatal_error if global error is set 
+// - gpu->broken if only this GPU is broken 
+// - NV_OK if this GPU is healthy 
+static NV_STATUS uvm_gpu_check_status(uvm_gpu_t *gpu) 
+{
+    NV_STATUS global = uvm_global_get_status(); 
+    if (global != NV_OK) 
+	return global; 
+    return uvm_gpu_get_broken_status(gpu); 
+}
+//Added by WBX end
 
 // Reset global fatal error
 // This is to be used by tests triggering the global error on purpose only.

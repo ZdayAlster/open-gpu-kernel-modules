@@ -69,6 +69,7 @@ int         nvidia_dev_get_uuid         (const NvU8 *, nvidia_stack_t *);
 void        nvidia_dev_put_uuid         (const NvU8 *, nvidia_stack_t *);
 int         nvidia_dev_block_gc6        (const NvU8 *, nvidia_stack_t *);
 int         nvidia_dev_unblock_gc6      (const NvU8 *, nvidia_stack_t *);
+const NvU8 *nvidia_get_uuid_by_pci_dev   (struct pci_dev *pdev);
 
 #if defined(CONFIG_PM)
 NV_STATUS     nv_set_system_power_state (nv_power_state_t, nv_pm_action_depth_t);
@@ -77,6 +78,7 @@ NV_STATUS     nv_set_system_power_state (nv_power_state_t, nv_pm_action_depth_t)
 void          nvidia_modeset_suspend           (NvU32 gpuId);
 void          nvidia_modeset_resume            (NvU32 gpuId);
 void          nvidia_modeset_remove            (NvU32 gpuId);
+void          nvidia_modeset_remove_excluded   (NvU32 gpuId);
 void          nvidia_modeset_probe             (const nv_linux_state_t *nvl);
 NvBool        nv_is_uuid_in_gpu_exclusion_list (const char *);
 

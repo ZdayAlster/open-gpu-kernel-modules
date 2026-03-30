@@ -3930,6 +3930,31 @@ void nvKmsKapiRemove
     }
 }
 
+/*
+ * nvKmsKapiRemoveExcluded - AER-safe variant of nvKmsKapiRemove().
+ *
+ * Invokes the removeExcluded callback if registered; falls back to the
+ * regular remove callback otherwise (for callers that pre-date this API).
+ */
+void nvKmsKapiRemoveExcluded
+(
+    NvU32 gpuId
+)
+{
+    if (pCallbacks) {
+        if (pCallbacks->removeExcluded) {
+            pCallbacks->removeExcluded(gpuId);
+        } else {
+            /* Fallback: nvidia-drm is an older version without removeExcluded.
+             * Call remove() — note this may hang if the GPU is truly frozen,
+             * but it is better than leaving stale DRM state around. */
+            pCallbacks->remove(gpuId);
+        }
+    }
+}
+
+
+
 void nvKmsKapiProbe
 (
     const nv_gpu_info_t *gpu_info

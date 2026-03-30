@@ -602,6 +602,20 @@ struct NvKmsKapiGpuInfo {
 struct NvKmsKapiCallbacks {
     void (*suspendResume)(NvBool suspend);
     void (*remove)(NvU32 gpuId);
+    /*
+     * removeExcluded - AER-safe variant of remove().
+     *
+     * Called from the PCIe AER error_detected (pci_channel_io_frozen) path
+     * when the GPU has been marked excluded.  Because the GPU MMIO is frozen,
+     * any GSP RPC issued during teardown will hang indefinitely.  This callback
+     * must therefore only perform DRM-layer cleanup (cancel delayed work, clean
+     * up mode config, drm_dev_unplug) and must NOT call declareEventInterest(),
+     * freeDevice(), releaseOwnership(), or drm_atomic_helper_shutdown().
+     *
+     * May be NULL; if so, remove() is called as a fallback (which is safe only
+     * when the GPU is not actually frozen at the time of the call).
+     */
+    void (*removeExcluded)(NvU32 gpuId);
     void (*probe)(const struct NvKmsKapiGpuInfo *gpu_info);
 };
 

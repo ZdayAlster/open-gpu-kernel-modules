@@ -2921,7 +2921,9 @@ static NV_STATUS add_gpu(const NvProcessorUuid *gpu_uuid,
 
     atomic64_set(&gpu->retained_count, 1);
     uvm_processor_mask_set(&g_uvm_global.retained_gpus, gpu->id);
-
+    //added by WBX start
+    atomic_set(&gpu->broken, (int)NV_OK);
+    //added by WBX end
     uvm_spin_lock_irqsave(&g_uvm_global.gpu_table_lock);
 
     if (alloc_parent)

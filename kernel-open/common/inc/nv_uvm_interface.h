@@ -1929,4 +1929,20 @@ NV_STATUS nvUvmInterfaceCslIncrementIv(UvmCslContext *uvmCslContext,
 NV_STATUS nvUvmInterfaceCslLogEncryption(UvmCslContext *uvmCslContext,
                                          UvmCslOperation operation,
                                          NvU32 bufferSize);
+
+/*******************************************************************************
+    nvUvmInterfaceGpuBrokenAer
+
+    Notify UVM that a GPU has encountered a fatal AER error. UVM will mark the
+    GPU as broken (per-GPU) without setting the global fatal_error, so other
+    GPUs remain operational.
+
+    This function can be called from PCI AER error_detected callback context
+    (may be in atomic/interrupt context).
+
+    Arguments:
+        pci_dev[IN] - The PCI device that experienced the AER fatal error.
+*/
+void nvUvmInterfaceGpuBrokenAer(struct pci_dev *pci_dev);
+
 #endif // _NV_UVM_INTERFACE_H_

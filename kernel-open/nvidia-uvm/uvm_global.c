@@ -54,6 +54,7 @@ static NV_STATUS uvm_register_callbacks(void)
     g_exported_uvm_events.resume = uvm_resume_entry;
     g_exported_uvm_events.drainP2P = uvm_suspend_and_drainP2P_entry;
     g_exported_uvm_events.resumeP2P = uvm_resumeP2P_entry;
+    g_exported_uvm_events.gpuBrokenAer = uvm_gpu_broken_aer_entry;
 
     // Register the UVM callbacks with the main GPU driver:
     status = uvm_rm_locked_call(nvUvmInterfaceRegisterUvmEvents(&g_exported_uvm_events));
@@ -532,6 +533,38 @@ NV_STATUS uvm_suspend_and_drainP2P_entry(const NvProcessorUuid *uuid)
 NV_STATUS uvm_resumeP2P_entry(const NvProcessorUuid *uuid)
 {
     UVM_ENTRY_RET(resumeP2P(uuid));
+}
+
+/*
+ * Mark a GPU as broken due to AER fatal error.
+ *
+ * This is called from PCI AER error_detected callback context, which may be
+ * atomic/interrupt context. We use the gpu_table_lock (spinlock) instead of
+ * the global_lock (mutex) since we cannot sleep.
+ *
+ * Only the affected GPU is marked broken; other GPUs remain operational.
+ * This does NOT set g_uvm_global.fatal_error.
+ */
+void uvm_gpu_broken_aer_entry(const NvProcessorUuid *uuid)
+{
+    uvm_parent_gpu_t *parent_gpu;
+    NvU32 i;
+
+    uvm_spin_lock_irqsave(&g_uvm_global.gpu_table_lock);
+
+    for (i = 0; i < UVM_PARENT_ID_MAX_GPUS; i++) {
+        parent_gpu = g_uvm_global.parent_gpus[i];
+        if (parent_gpu && uvm_uuid_eq(&parent_gpu->uuid, uuid)) {
+            NvU32 j;
+            for (j = 0; j < UVM_PARENT_ID_MAX_SUB_PROCESSORS; j++) {
+                if (parent_gpu->gpus[j])
+                    uvm_gpu_set_broken(parent_gpu->gpus[j], NV_ERR_RC_ERROR);
+            }
+            break;
+        }
+    }
+
+    uvm_spin_unlock_irqrestore(&g_uvm_global.gpu_table_lock);
 }
 
 NV_STATUS uvm_global_gpu_check_nvlink_error(uvm_processor_mask_t *gpus)

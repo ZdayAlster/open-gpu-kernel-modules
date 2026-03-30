@@ -34,9 +34,10 @@ static struct NvKmsKapiFunctionsTable nvKmsFuncsTable = {
 const struct NvKmsKapiFunctionsTable* const nvKms = &nvKmsFuncsTable;
 
 const struct NvKmsKapiCallbacks nv_drm_kapi_callbacks = {
-    .suspendResume = nv_drm_suspend_resume,
-    .remove = nv_drm_remove,
-    .probe = nv_drm_register_drm_device,
+    .suspendResume   = nv_drm_suspend_resume,
+    .remove          = nv_drm_remove,
+    .removeExcluded  = nv_drm_remove_excluded,
+    .probe           = nv_drm_register_drm_device,
 };
 
 #endif

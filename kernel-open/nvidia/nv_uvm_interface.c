@@ -1751,6 +1751,33 @@ NV_STATUS nvUvmInterfaceCslLogEncryption(UvmCslContext *uvmCslContext,
 }
 EXPORT_SYMBOL(nvUvmInterfaceCslLogEncryption);
 
+/*
+ * Notify UVM that a GPU has encountered a fatal AER error.
+ *
+ * Safe to call from PCI AER error_detected callback context (atomic).
+ * Follows the same pattern as nv_uvm_drain_P2P: looks up the UVM events
+ * callback table and invokes the registered handler.
+ */
+void nvUvmInterfaceGpuBrokenAer(struct pci_dev *pdev)
+{
+    struct UvmEventsLinux *events;
+    const NvU8 *uuid;
+
+    uuid = nvidia_get_uuid_by_pci_dev(pdev);
+    if (uuid == NULL)
+        return;
+
+    /*
+     * No locking needed here — this mirrors nv_uvm_event_interrupt()
+     * which is called from ISR context. The events pointer is read once
+     * atomically via getUvmEvents().
+     */
+    events = getUvmEvents();
+    if (events && events->gpuBrokenAer)
+        events->gpuBrokenAer((const NvProcessorUuid *)uuid);
+}
+EXPORT_SYMBOL(nvUvmInterfaceGpuBrokenAer);
+
 #else // NV_UVM_ENABLE
 
 NV_STATUS nv_uvm_suspend(void)

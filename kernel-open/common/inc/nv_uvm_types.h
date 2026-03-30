@@ -879,6 +879,21 @@ typedef NV_STATUS (*uvmEventDrainP2P_t) (const NvProcessorUuid *pGpuUuidStruct);
 */
 typedef NV_STATUS (*uvmEventResumeP2P_t) (const NvProcessorUuid *pGpuUuidStruct);
 
+/*******************************************************************************
+    uvmEventGpuBrokenAer
+    This function will be called by the GPU driver to signal to UVM that a GPU
+    has encountered a fatal AER error and is no longer usable. UVM will mark
+    that GPU as broken (per-GPU) without setting the global fatal_error, so
+    other GPUs remain operational.
+
+    This function can be called from PCI AER error_detected callback context
+    (atomic/interrupt context). UVM must not sleep in this callback.
+
+    Arguments:
+        pGpuUuidStruct[IN] - UUID of the GPU that experienced the AER fatal error.
+*/
+typedef void (*uvmEventGpuBrokenAer_t) (const NvProcessorUuid *pGpuUuidStruct);
+
 struct UvmEventsLinux
 {
     uvmEventIsrTopHalf_t isrTopHalf;
@@ -886,6 +901,7 @@ struct UvmEventsLinux
     uvmEventResume_t resume;
     uvmEventDrainP2P_t drainP2P;
     uvmEventResumeP2P_t resumeP2P;
+    uvmEventGpuBrokenAer_t gpuBrokenAer;
 };
 
 struct UvmEventsWindows

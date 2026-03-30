@@ -833,6 +833,18 @@ static void nvkms_remove(NvU32 gpuId)
     // be closed before a device is removed.
 }
 
+/*
+ * nvkms_remove_excluded - AER-safe device removal.
+ *
+ * Called when the GPU has been excluded due to a fatal PCIe AER error.
+ * Invokes nvKmsKapiRemoveExcluded() which routes to nv_drm_remove_excluded(),
+ * skipping any GSP RPC that would hang on a frozen GPU.
+ */
+static void nvkms_remove_excluded(NvU32 gpuId)
+{
+    nvKmsKapiRemoveExcluded(gpuId);
+}
+
 static void nvkms_probe(const nv_gpu_info_t *gpu_info)
 {
     nvKmsKapiProbe(gpu_info);
@@ -845,10 +857,11 @@ static void nvkms_probe(const nv_gpu_info_t *gpu_info)
 
 static nvidia_modeset_rm_ops_t __rm_ops = { 0 };
 static nvidia_modeset_callbacks_t nvkms_rm_callbacks = {
-    .suspend = nvkms_suspend,
-    .resume  = nvkms_resume,
-    .remove  = nvkms_remove,
-    .probe   = nvkms_probe,
+    .suspend         = nvkms_suspend,
+    .resume          = nvkms_resume,
+    .remove          = nvkms_remove,
+    .remove_excluded = nvkms_remove_excluded,
+    .probe           = nvkms_probe,
 };
 
 static int nvkms_alloc_rm(void)

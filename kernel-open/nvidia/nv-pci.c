@@ -25,6 +25,7 @@
 #include "nv-pci-types.h"
 #include "nv-pci.h"
 #include "nv-msi.h"
+#include "nv_uvm_interface.h"
 #include "nv-hypervisor.h"
 #include "nv-reg.h"
 
@@ -2589,6 +2590,250 @@ NvBool NV_API_CALL nv_grdma_pci_topology_supported(
 #if defined(CONFIG_PM)
 extern struct dev_pm_ops nv_pm_ops;
 #endif
+//added by WBX start********************
+/*
+ * NVIDIA GPU PCI Error Handler
+ *
+ * Register with Linux PCI AER (Advanced Error Reporting) framework to handle
+ * PCIe errors such as fatal/non-fatal errors and I/O freezes. Without this,
+ * a GPU experiencing AER fatal error becomes a "zombie" device that poisons
+ * the entire device list (nvidia_read_card_info), making all GPUs unusable.
+ *
+ * Callback flow:
+ *   error_detected() → [kernel disables MMIO] → slot_reset() → resume()
+ *   error_detected() → DISCONNECT → [kernel calls pci_driver.remove()]
+ */
+
+static pci_ers_result_t
+nv_pci_error_detected(struct pci_dev *pdev, pci_channel_state_t state)
+{
+    nv_linux_state_t *nvl = pci_get_drvdata(pdev);
+    nv_state_t *nv;
+
+    if (!nvl)
+    {
+        return PCI_ERS_RESULT_DISCONNECT;
+    }
+
+    nv = NV_STATE_PTR(nvl);
+
+    nv_printf(NV_DBG_ERRORS,
+              "NVRM: PCI error detected on GPU %04x:%02x:%02x.%x, state=%d\n",
+              NV_PCI_DOMAIN_NUMBER(pdev), NV_PCI_BUS_NUMBER(pdev),
+              NV_PCI_SLOT_NUMBER(pdev), PCI_FUNC(pdev->devfn), state);
+
+    switch (state)
+    {
+    case pci_channel_io_frozen:
+        /*
+         * PCIe link frozen (typical for AER fatal error).
+         * The kernel has already disabled MMIO access to this device.
+         *
+         * Immediately mark the GPU as excluded so that:
+         *   - nvidia_read_card_info() skips this device
+         *   - nv_open_device() rejects new opens (-EPERM)
+         *   - Existing clients continue until they notice the error
+         *
+         * Return NEED_RESET to request the kernel attempt a slot/bus reset.
+         */
+        LOCK_NV_LINUX_DEVICES();
+        nv->flags |= NV_FLAG_EXCLUDE;
+        UNLOCK_NV_LINUX_DEVICES();
+
+        /*
+         * Notify nvidia-modeset to release this GPU using the AER-safe path.
+         *
+         * nvidia_modeset_remove_excluded() routes to nv_drm_remove_excluded()
+         * which skips all GSP RPCs (declareEventInterest, freeDevice,
+         * releaseOwnership, drm_atomic_helper_shutdown).  Only DRM-layer
+         * resources are torn down:
+         *   - cancel_delayed_work_sync stops the hotplug poll kthread
+         *   - drm_kms_helper_poll_fini stops output polling
+         *   - drm_mode_config_cleanup frees mode objects
+         *   - drm_dev_unplug prevents new DRM ioctls from reaching the GPU
+         *
+         * This prevents the stale MSI irq_desc pointer (SLUB poison 0x01...)
+         * that otherwise causes a GPF in show_interrupts() after a
+         * remove/rescan cycle.
+         *
+         * The NVKMS / RM objects are intentionally leaked here; they will be
+         * reclaimed when nv_pci_remove() is called (after a slot reset or
+         * manual /sys/.../remove).
+         *
+         * Do NOT use nvidia_modeset_remove() here: that path calls
+         * freeDevice() → KmsFreeDevice() → nvkms_ioctl(NVKMS_IOCTL_FREE_DEVICE)
+         * and RmFreeDevice() → GSP RPC, both of which hang forever on a
+         * frozen GPU and eventually trigger a kernel panic on L20 (compute
+         * cards that load nvidia-drm but have no display).
+         */
+        nvidia_modeset_remove_excluded(nv->gpu_id);
+
+        /* 通知 UVM 层只标记这张 GPU broken，
+         * 而不是设置全局 fatal_error */
+        //nvUvmInterfaceGpuBrokenAer(pdev);
+
+        nv_printf(NV_DBG_ERRORS,
+                  "NVRM: GPU %04x:%02x:%02x.%x  PCI channel io frozen, marking as excluded, modeset removed\n",
+                  NV_PCI_DOMAIN_NUMBER(pdev), NV_PCI_BUS_NUMBER(pdev),
+                  NV_PCI_SLOT_NUMBER(pdev), PCI_FUNC(pdev->devfn));
+
+        return PCI_ERS_RESULT_NEED_RESET;
+
+    case pci_channel_io_normal:
+        /*
+         * Recoverable error (e.g., AER correctable error or transient glitch).
+         * The device is still accessible, no special action needed.
+         */
+        return PCI_ERS_RESULT_CAN_RECOVER;
+
+    case pci_channel_io_perm_failure:
+        /*
+         * Permanent failure - the device cannot be recovered.
+         * Mark as excluded and let the kernel disconnect it.
+         * The kernel will subsequently call nv_pci_remove().
+         */
+        LOCK_NV_LINUX_DEVICES();
+        nv->flags |= NV_FLAG_EXCLUDE;
+	    pci_disable_device(pdev);
+
+        /* 通知 UVM 层只标记这张 GPU broken，
+         * 而不是设置全局 fatal_error */
+        nvUvmInterfaceGpuBrokenAer(pdev);
+        UNLOCK_NV_LINUX_DEVICES();
+
+        nv_printf(NV_DBG_ERRORS,
+                  "NVRM: GPU %04x:%02x:%02x.%x permanent PCI failure, marking as excluded\n",
+                  NV_PCI_DOMAIN_NUMBER(pdev), NV_PCI_BUS_NUMBER(pdev),
+                  NV_PCI_SLOT_NUMBER(pdev), PCI_FUNC(pdev->devfn));
+
+        return PCI_ERS_RESULT_DISCONNECT;
+    }
+
+    return PCI_ERS_RESULT_DISCONNECT;
+}
+
+static pci_ers_result_t
+nv_pci_mmio_enabled(struct pci_dev *pdev)
+{
+    nv_linux_state_t *nvl = pci_get_drvdata(pdev);
+
+    if (!nvl)
+    {
+        return PCI_ERS_RESULT_DISCONNECT;
+    }
+
+    /*
+     * The kernel has re-enabled MMIO access after error_detected().
+     * We could attempt to read GPU registers here to check if the device
+     * is actually alive. For now, always request a reset which is the
+     * safest approach for GPUs.
+     */
+    nv_printf(NV_DBG_INFO,
+              "NVRM: MMIO re-enabled for GPU %04x:%02x:%02x.%x, requesting reset\n",
+              NV_PCI_DOMAIN_NUMBER(pdev), NV_PCI_BUS_NUMBER(pdev),
+              NV_PCI_SLOT_NUMBER(pdev), PCI_FUNC(pdev->devfn));
+
+    return PCI_ERS_RESULT_NEED_RESET;
+}
+
+static pci_ers_result_t
+nv_pci_slot_reset(struct pci_dev *pdev)
+{
+    nv_linux_state_t *nvl = pci_get_drvdata(pdev);
+    nv_state_t *nv;
+
+    if (!nvl)
+    {
+        return PCI_ERS_RESULT_DISCONNECT;
+    }
+
+    nv = NV_STATE_PTR(nvl);
+
+    nv_printf(NV_DBG_INFO,
+              "NVRM: PCI slot reset completed for GPU %04x:%02x:%02x.%x\n",
+              NV_PCI_DOMAIN_NUMBER(pdev), NV_PCI_BUS_NUMBER(pdev),
+              NV_PCI_SLOT_NUMBER(pdev), PCI_FUNC(pdev->devfn));
+
+    /*
+     * The kernel has performed a slot/bus reset and restored the device.
+     * Verify the device is actually back on the bus.
+     */
+    if (!pci_device_is_present(pdev))
+    {
+        nv_printf(NV_DBG_ERRORS,
+                  "NVRM: GPU %04x:%02x:%02x.%x not present after slot reset\n",
+                  NV_PCI_DOMAIN_NUMBER(pdev), NV_PCI_BUS_NUMBER(pdev),
+                  NV_PCI_SLOT_NUMBER(pdev), PCI_FUNC(pdev->devfn));
+        return PCI_ERS_RESULT_DISCONNECT;
+    }
+
+    /*
+     * Re-enable the device and restore PCI configuration space.
+     * If this fails, the device is permanently broken.
+     */
+    if (pci_enable_device(pdev) != 0)
+    {
+        nv_printf(NV_DBG_ERRORS,
+                  "NVRM: Failed to re-enable GPU %04x:%02x:%02x.%x after slot reset\n",
+                  NV_PCI_DOMAIN_NUMBER(pdev), NV_PCI_BUS_NUMBER(pdev),
+                  NV_PCI_SLOT_NUMBER(pdev), PCI_FUNC(pdev->devfn));
+        return PCI_ERS_RESULT_DISCONNECT;
+    }
+
+    pci_set_master(pdev);
+
+    /*
+     * Clear the EXCLUDE flag so the GPU can be used again.
+     * Note: if the device was open (NV_FLAG_OPEN) before the error,
+     * existing clients may still have stale state. The safest approach
+     * is to keep it excluded until those clients close and reopen,
+     * then nv_open_device -> nv_start_device -> rm_init_adapter
+     * will reinitialize the RM state cleanly.
+     */
+    if (!(nv->flags & NV_FLAG_OPEN))
+    {
+        nv_printf(NV_DBG_INFO,
+                  "NVRM: GPU %04x:%02x:%02x.%x recovered successfully, re-enabling\n",
+                  NV_PCI_DOMAIN_NUMBER(pdev), NV_PCI_BUS_NUMBER(pdev),
+                  NV_PCI_SLOT_NUMBER(pdev), PCI_FUNC(pdev->devfn));
+        nv->flags &= ~NV_FLAG_EXCLUDE;
+    }
+    else
+    {
+        nv_printf(NV_DBG_WARNINGS,
+                  "NVRM: GPU %04x:%02x:%02x.%x recovered but was in use, "
+                  "keeping excluded until clients reopen\n",
+                  NV_PCI_DOMAIN_NUMBER(pdev), NV_PCI_BUS_NUMBER(pdev),
+                  NV_PCI_SLOT_NUMBER(pdev), PCI_FUNC(pdev->devfn));
+    }
+
+    return PCI_ERS_RESULT_RECOVERED;
+}
+
+static void
+nv_pci_error_resume(struct pci_dev *pdev)
+{
+    nv_linux_state_t *nvl = pci_get_drvdata(pdev);
+
+    if (!nvl)
+    {
+        return;
+    }
+
+    nv_printf(NV_DBG_INFO,
+              "NVRM: PCI error recovery completed for GPU %04x:%02x:%02x.%x\n",
+              NV_PCI_DOMAIN_NUMBER(pdev), NV_PCI_BUS_NUMBER(pdev),
+              NV_PCI_SLOT_NUMBER(pdev), PCI_FUNC(pdev->devfn));
+}
+
+static const struct pci_error_handlers nv_pci_err_handler = {
+    .error_detected = nv_pci_error_detected,
+    .mmio_enabled   = nv_pci_mmio_enabled,
+    .slot_reset     = nv_pci_slot_reset,
+    .resume         = nv_pci_error_resume,
+};
+//added by WBX end*********************
+
 
 struct pci_driver nv_pci_driver = {
     .name      = MODULE_NAME,
@@ -2596,6 +2841,7 @@ struct pci_driver nv_pci_driver = {
     .probe     = nv_pci_probe,
     .remove    = nv_pci_remove,
     .shutdown  = nv_pci_shutdown,
+    .err_handler = &nv_pci_err_handler, //added by WBX,register pci error handler
 #if defined(NV_USE_VFIO_PCI_CORE) && \
   defined(NV_PCI_DRIVER_HAS_DRIVER_MANAGED_DMA)
     .driver_managed_dma = NV_TRUE,

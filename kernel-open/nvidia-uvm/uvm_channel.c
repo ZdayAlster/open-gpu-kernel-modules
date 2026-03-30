@@ -2059,7 +2059,7 @@ NV_STATUS uvm_channel_get_status(uvm_channel_t *channel)
 {
     uvm_gpu_t *gpu;
     NvNotification *error_notifier;
-
+    UVM_ERR_PRINT("WBX uvm_channel_get_status uvm\n");
     if (uvm_channel_is_proxy(channel))
         error_notifier = channel->proxy.channel_info.shadowErrorNotifier;
     else
@@ -2075,9 +2075,11 @@ NV_STATUS uvm_channel_get_status(uvm_channel_t *channel)
     // Notably this might be racy depending on the ordering of the notifications,
     // but we can't always call RM to service interrupts from this context.
     gpu = uvm_channel_get_gpu(channel);
-    if (gpu->ecc.enabled && *gpu->ecc.error_notifier)
+    if (gpu->ecc.enabled && *gpu->ecc.error_notifier){
+	    UVM_ERR_PRINT("WBX uvm_channel_get_status ECC error notifier \n");
         return NV_ERR_ECC_ERROR;
-
+    }
+    UVM_ERR_PRINT("WBX uvm_channel_get_status uvm rc error notifier \n");
     return NV_ERR_RC_ERROR;
 }
 
@@ -2118,8 +2120,24 @@ NV_STATUS uvm_channel_check_errors(uvm_channel_t *channel)
                           channel->gpu_get);
         }
     }
-
-    uvm_global_set_fatal_error(status);
+    
+    //del old set by WBX,no matter NV_ERR_ECC_ERROR or NV_ERR_RC_ERROR, all set global fatal error
+    //uvm_global_set_fatal_error(status);
+    //WBX added  start---
+    { 
+	uvm_gpu_t *gpu = uvm_channel_get_gpu(channel); 
+	// Check if this is an AER-induced fault (RC_ERROR from channel, 
+	// not ECC). For AER faults, only mark the affected GPU broken, 
+	// leaving other GPUs operational. 
+	if (status == NV_ERR_RC_ERROR && !gpu->ecc.enabled) { 
+	        // Per-GPU isolation: AER channel error → only this GPU broken 
+            uvm_gpu_set_broken(gpu, status); 
+        } else {
+            // ECC and other unrecoverable errors → global fatal (original behavior) 
+            uvm_global_set_fatal_error(status); 
+        }
+    }
+    //WBX added end---
 
     return status;
 }

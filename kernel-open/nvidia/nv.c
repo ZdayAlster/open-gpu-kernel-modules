@@ -1669,8 +1669,17 @@ static int nv_open_device(nv_state_t *nv, nvidia_stack_t *sp)
         }
 
         rc = nv_start_device(nv, sp);
-        if (rc != 0)
+        if (rc != 0){
+	    //wbx新增 如果 rm_init_adapter 失败，标记设备为 excluded
+            //避免后续其他进程重复尝试初始化失败设备
+            if (rc == -EIO)
+            {
+                nv->flags |= NV_FLAG_EXCLUDE;
+                NV_DEV_PRINTF(NV_DBG_ERRORS, nv,
+                          "Excluding GPU due to initialization failure\n");
+            }
             return rc;
+	}
     }
     else if (rm_is_device_sequestered(sp, nv))
     {
@@ -2045,6 +2054,45 @@ static void nv_stop_device(nv_state_t *nv, nvidia_stack_t *sp)
      */
     rm_ref_dynamic_power(sp, nv, NV_DYNAMIC_PM_FINE);
 
+    /*
+     * If the GPU has fallen off the bus (AER fatal, Xid 79, surprise removal),
+     * skip the RM teardown path entirely. Calling rm_disable_adapter() or
+     * rm_shutdown_adapter() when the GPU is lost will cause RPC calls to the
+     * GSP firmware to time out (up to ~110s per RPC), which is exactly why
+     * `systemctl stop nvidia-persistenced` hangs after an AER injection.
+     *
+     * Three conditions cover the GPU-lost cases:
+     *   nv->removed                 - set by nvidia_pci_remove() after AER
+     *                                 pci_channel_io_perm_failure or hot-unplug
+     *   NV_FLAG_IN_SURPRISE_REMOVAL - set by the eGPU surprise-removal path
+     *   NV_FLAG_EXCLUDE             - set by our AER error_detected handler for
+     *                                 pci_channel_io_frozen (fatal AER, Xid 79)
+     *
+     * In all these cases the hardware is inaccessible. We still need to stop
+     * the bottom-half/queue kthreads to avoid further GPU access attempts, but
+     * we must not call rm_disable_adapter() or rm_shutdown_adapter() which
+     * would block on GSP RPC responses that will never come.
+     */
+    if (nv->removed || NV_IS_DEVICE_IN_SURPRISE_REMOVAL(nv) ||
+        (nv->flags & NV_FLAG_EXCLUDE))
+    {
+        NV_DEV_PRINTF(NV_DBG_WARNINGS, nv,
+            "GPU lost/excluded, skipping RM teardown to avoid RPC timeout\n");
+
+        /* Stop kthreads so they no longer attempt to access the lost GPU */
+        if (!(nv->flags & NV_FLAG_PERSISTENT_SW_STATE))
+        {
+            nv_acpi_unregister_notifier(nvl);
+            nv_kthread_q_stop(&nvl->bottom_half_q);
+            if (nv->queue != NULL)
+            {
+                nv->queue = NULL;
+                nv_kthread_q_stop(&nvl->queue.nvk);
+            }
+        }
+        goto skip_rm_teardown;
+    }
+
     /* Adapter is already shutdown as part of nvidia_pci_remove */
     if (!nv->removed)
     {
@@ -2058,6 +2106,8 @@ static void nv_stop_device(nv_state_t *nv, nvidia_stack_t *sp)
             nv_shutdown_adapter(sp, nv, nvl);
         }
     }
+
+skip_rm_teardown:
 
     if (!(nv->flags & NV_FLAG_PERSISTENT_SW_STATE))
     {
@@ -2344,6 +2394,19 @@ static int nvidia_read_card_info(nv_ioctl_card_info_t *ci, size_t num_entries)
         /* We do not include excluded GPUs in the list... */
         if ((nv->flags & NV_FLAG_EXCLUDE) != 0)
             continue;
+	
+	//wbx新增：检查设备是否可访问
+        // 对于已经知道有问题的设备，跳过它
+        if (nv->removed)
+            continue;
+        //wbx新增：检测设备是否还在总线上,不在则跳过
+        if (dev_is_pci(nvl->dev) && !pci_device_is_present(nvl->pci_dev))
+        {
+
+            NV_DEV_PRINTF(NV_DBG_ERRORS, nv,
+                      "GPU not present on bus, skipping\n");
+            continue;
+        }
 
         ci[i].valid              = NV_TRUE;
         ci[i].pci_info.domain    = nv->pci_info.domain;
@@ -5202,15 +5265,27 @@ int nvidia_dev_get(NvU32 gpu_id, nvidia_stack_t *sp)
 void nvidia_dev_put(NvU32 gpu_id, nvidia_stack_t *sp)
 {
     nv_linux_state_t *nvl;
+    nv_state_t *nv;
 
     /* Takes nvl->ldata_lock */
     nvl = find_gpu_id(gpu_id);
     if (!nvl)
         return;
 
-    nv_close_device(NV_STATE_PTR(nvl), sp);
+    nv = NV_STATE_PTR(nvl);
 
-    WARN_ON(rm_set_external_kernel_client_count(sp, NV_STATE_PTR(nvl), NV_FALSE) != NV_OK);
+    nv_close_device(nv, sp);
+
+    /*
+     * Skip the RM call if the GPU has fallen off the bus — the RPC will
+     * fail immediately and trigger a spurious WARN_ON.  The external
+     * kernel client count bookkeeping is moot when the GPU is lost.
+     */
+    if (!(nv->removed || NV_IS_DEVICE_IN_SURPRISE_REMOVAL(nv) ||
+          (nv->flags & NV_FLAG_EXCLUDE)))
+    {
+        WARN_ON(rm_set_external_kernel_client_count(sp, nv, NV_FALSE) != NV_OK);
+    }
 
     up(&nvl->ldata_lock);
 }
@@ -5276,6 +5351,7 @@ out:
 void nvidia_dev_put_uuid(const NvU8 *uuid, nvidia_stack_t *sp)
 {
     nv_linux_state_t *nvl;
+    nv_state_t *nv;
 
     /* Callers must already have called nvidia_dev_get_uuid() */
 
@@ -5284,9 +5360,20 @@ void nvidia_dev_put_uuid(const NvU8 *uuid, nvidia_stack_t *sp)
     if (!nvl)
         return;
 
-    nv_close_device(NV_STATE_PTR(nvl), sp);
+    nv = NV_STATE_PTR(nvl);
 
-    WARN_ON(rm_set_external_kernel_client_count(sp, NV_STATE_PTR(nvl), NV_FALSE) != NV_OK);
+    nv_close_device(nv, sp);
+
+    /*
+     * Skip the RM call if the GPU has fallen off the bus — the RPC will
+     * fail immediately and trigger a spurious WARN_ON.  The external
+     * kernel client count bookkeeping is moot when the GPU is lost.
+     */
+    if (!(nv->removed || NV_IS_DEVICE_IN_SURPRISE_REMOVAL(nv) ||
+          (nv->flags & NV_FLAG_EXCLUDE)))
+    {
+        WARN_ON(rm_set_external_kernel_client_count(sp, nv, NV_FALSE) != NV_OK);
+    }
 
     up(&nvl->ldata_lock);
 }
@@ -5331,6 +5418,40 @@ int nvidia_dev_unblock_gc6(const NvU8 *uuid, nvidia_stack_t *sp)
     up(&nvl->ldata_lock);
 
     return 0;
+}
+
+/*
+ * Look up a GPU's cached UUID by its PCI device pointer.
+ *
+ * This is safe to call from atomic/interrupt context (e.g. PCI AER
+ * error_detected callback). It takes nv_linux_devices_lock but does not
+ * take nvl->ldata_lock since the UUID is immutable once cached.
+ *
+ * Returns the UUID pointer if found (valid as long as the device is
+ * registered), or NULL if not found.
+ */
+const NvU8 *nvidia_get_uuid_by_pci_dev(struct pci_dev *pdev)
+{
+    nv_linux_state_t *nvl;
+    nv_state_t *nv;
+    const NvU8 *uuid = NULL;
+
+    if (pdev == NULL)
+        return NULL;
+
+    LOCK_NV_LINUX_DEVICES();
+    for (nvl = nv_linux_devices; nvl; nvl = nvl->next)
+    {
+        nv = NV_STATE_PTR(nvl);
+        if (nv->handle == pdev)
+        {
+            uuid = nv_get_cached_uuid(nv);
+            break;
+        }
+    }
+    UNLOCK_NV_LINUX_DEVICES();
+
+    return uuid;
 }
 
 NV_STATUS NV_API_CALL nv_get_device_memory_config(

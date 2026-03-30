@@ -79,6 +79,27 @@ void nvidia_modeset_remove(NvU32 gpuId)
     }
 }
 
+/*
+ * nvidia_modeset_remove_excluded - AER-safe device removal.
+ *
+ * Invokes the remove_excluded callback if registered; falls back to the
+ * regular remove callback otherwise.  Must not be called with the RM lock held.
+ */
+void nvidia_modeset_remove_excluded(NvU32 gpuId)
+{
+    if (nv_modeset_callbacks)
+    {
+        if (nv_modeset_callbacks->remove_excluded)
+        {
+            nv_modeset_callbacks->remove_excluded(gpuId);
+        }
+        else if (nv_modeset_callbacks->remove)
+        {
+            nv_modeset_callbacks->remove(gpuId);
+        }
+    }
+}
+
 static void nvidia_modeset_get_gpu_info(nv_gpu_info_t *gpu_info,
                                         const nv_linux_state_t *nvl)
 {

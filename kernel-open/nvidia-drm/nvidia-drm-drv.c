@@ -840,22 +840,38 @@ static int nv_drm_dev_load(struct drm_device *dev)
     return 0;
 }
 
-static void nv_drm_dev_unload(struct drm_device *dev)
+/*
+ * nv_drm_dev_unload - tear down DRM device resources.
+ *
+ * @gpu_excluded: if true, the GPU has been marked excluded due to a fatal PCIe
+ *   error (AER).  In this case the GPU is no longer accessible via MMIO, so
+ *   any operation that would issue a GSP RPC (declareEventInterest,
+ *   freeDevice, releaseOwnership, drm_atomic_helper_shutdown) is skipped to
+ *   avoid an indefinite hang waiting for a response that will never arrive.
+ *   The NVKMS / RM objects will be cleaned up later when the driver is
+ *   unloaded or the device is re-probed.
+ */
+static void nv_drm_dev_unload(struct drm_device *dev, bool gpu_excluded)
 {
     struct NvKmsKapiDevice *pDevice = NULL;
 
     struct nv_drm_device *nv_dev = to_nv_device(dev);
 
-    NV_DRM_DEV_LOG_INFO(nv_dev, "Unloading driver");
+    NV_DRM_DEV_LOG_INFO(nv_dev, "Unloading driver%s",
+                        gpu_excluded ? " (GPU excluded, skipping NVKMS RPCs)" : "");
 
     if (!drm_core_check_feature(dev, DRIVER_MODESET)) {
         return;
     }
 
-    /* Release modeset ownership if fbdev is enabled */
-
+    /*
+     * Release modeset ownership if fbdev is enabled.
+     * Skip when GPU is excluded: drm_atomic_helper_shutdown() would attempt
+     * a modeset commit and releaseOwnership() would issue a GSP RPC, both of
+     * which will hang forever on a frozen GPU.
+     */
 #if defined(NV_DRM_FBDEV_AVAILABLE)
-    if (nv_dev->hasFramebufferConsole) {
+    if (!gpu_excluded && nv_dev->hasFramebufferConsole) {
         drm_atomic_helper_shutdown(dev);
         nvKms->releaseOwnership(nv_dev->pDevice);
     }
@@ -878,8 +894,15 @@ static void nv_drm_dev_unload(struct drm_device *dev)
 
     drm_mode_config_cleanup(dev);
 
-    if (!nvKms->declareEventInterest(nv_dev->pDevice, 0x0)) {
-        NV_DRM_DEV_LOG_ERR(nv_dev, "Failed to stop event listening");
+    /*
+     * Stop NVKMS event notifications.
+     * Skip when GPU is excluded: declareEventInterest issues a GSP RPC which
+     * will hang on a frozen GPU.
+     */
+    if (!gpu_excluded) {
+        if (!nvKms->declareEventInterest(nv_dev->pDevice, 0x0)) {
+            NV_DRM_DEV_LOG_ERR(nv_dev, "Failed to stop event listening");
+        }
     }
 
     /* Unset NvKmsKapiDevice */
@@ -889,7 +912,16 @@ static void nv_drm_dev_unload(struct drm_device *dev)
 
     mutex_unlock(&nv_dev->lock);
 
-    nvKms->freeDevice(pDevice);
+    /*
+     * Free the NVKMS device object (involves GSP RPCs via KmsFreeDevice and
+     * RM handle teardown via RmFreeDevice).
+     * Skip when GPU is excluded: these RPCs will never complete on a frozen GPU.
+     * The NVKMS / RM objects are leaked here intentionally; they will be
+     * reclaimed when nvidia.ko is unloaded or the device is fully removed.
+     */
+    if (!gpu_excluded) {
+        nvKms->freeDevice(pDevice);
+    }
 }
 
 static int __nv_drm_master_set(struct drm_device *dev,
@@ -2084,7 +2116,7 @@ void nv_drm_register_drm_device(const struct NvKmsKapiGpuInfo *gpu_info)
 
 failed_drm_register:
 
-    nv_drm_dev_unload(dev);
+    nv_drm_dev_unload(dev, false);
 
 failed_drm_load:
 
@@ -2162,7 +2194,7 @@ static void nv_drm_dev_destroy(struct nv_drm_device *nv_dev)
 {
     struct drm_device *dev = nv_dev->dev;
 
-    nv_drm_dev_unload(dev);
+    nv_drm_dev_unload(dev, false);
     drm_dev_put(dev);
     nv_drm_free(nv_dev);
 }
@@ -2180,6 +2212,40 @@ void nv_drm_remove(NvU32 gpuId)
         nv_drm_dev_destroy(nv_dev);
     }
 }
+
+/*
+ * Unregister a single NVIDIA DRM device whose GPU has been marked excluded
+ * due to a fatal PCIe AER error.
+ *
+ * This is the AER-safe variant of nv_drm_remove().  Because the GPU is no
+ * longer accessible via MMIO, all operations that would issue a GSP RPC
+ * (declareEventInterest, freeDevice, releaseOwnership,
+ * drm_atomic_helper_shutdown) are skipped to avoid an indefinite hang.
+ *
+ * DRM-layer resources (hotplug work, mode config, etc.) are still cleaned
+ * up so that:
+ *   - The hotplug poll kthread stops immediately
+ *   - No further DRM ioctls can reach the dead GPU
+ *   - /proc/interrupts does not retain stale irq_desc pointers
+ *
+ * The NVKMS / RM objects are intentionally leaked; they will be reclaimed
+ * when the driver is unloaded or the device is fully removed via
+ * nv_pci_remove().
+ */
+void nv_drm_remove_excluded(NvU32 gpuId)
+{
+    struct nv_drm_device *nv_dev = nv_drm_find_and_remove_device(gpuId);
+
+    if (nv_dev) {
+        NV_DRM_DEV_LOG_INFO(nv_dev, "Removing excluded (AER) device");
+        drm_dev_unplug(nv_dev->dev);
+        nv_drm_dev_unload(nv_dev->dev, true /* gpu_excluded */);
+        drm_dev_put(nv_dev->dev);
+        nv_drm_free(nv_dev);
+    }
+}
+
+
 
 /*
  * Unregister all NVIDIA DRM devices.

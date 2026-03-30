@@ -62,6 +62,18 @@ typedef struct {
     /* Remove callback, called when a device is going away completely. */
     void (*remove)(NvU32 gpu_id);
 
+    /*
+     * remove_excluded - AER-safe variant of remove().
+     *
+     * Called when the GPU has been marked excluded due to a fatal PCIe AER
+     * error.  Implementations must not issue any GSP RPCs (declareEventInterest,
+     * freeDevice, releaseOwnership, drm_atomic_helper_shutdown) because the GPU
+     * MMIO is frozen and such RPCs will never complete.
+     *
+     * May be NULL; if so, nvidia_modeset_remove() is used as a fallback.
+     */
+    void (*remove_excluded)(NvU32 gpu_id);
+
     /* Probe callback, called when a device is being hotplugged. */
     void (*probe)(const nv_gpu_info_t *gpu_info);
 } nvidia_modeset_callbacks_t;
