@@ -2670,7 +2670,7 @@ nv_pci_error_detected(struct pci_dev *pdev, pci_channel_state_t state)
 
         /* 通知 UVM 层只标记这张 GPU broken，
          * 而不是设置全局 fatal_error */
-        //nvUvmInterfaceGpuBrokenAer(pdev);
+        nvUvmInterfaceGpuBrokenAer(pdev);
 
         nv_printf(NV_DBG_ERRORS,
                   "NVRM: GPU %04x:%02x:%02x.%x  PCI channel io frozen, marking as excluded, modeset removed\n",
