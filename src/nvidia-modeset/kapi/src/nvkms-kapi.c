@@ -3941,6 +3941,14 @@ void nvKmsKapiRemoveExcluded
     NvU32 gpuId
 )
 {
+    /*
+     * WBX: Mark the NVKMS device as excluded BEFORE invoking the DRM
+     * removeExcluded callback.  This ensures that any concurrent NVKMS
+     * threads (timers, flips, etc.) will bail out of DMA push operations
+     * immediately instead of spinning on frozen GPU registers.
+     */
+    nvEvoSetDeviceExcluded(gpuId);
+
     if (pCallbacks) {
         if (pCallbacks->removeExcluded) {
             pCallbacks->removeExcluded(gpuId);

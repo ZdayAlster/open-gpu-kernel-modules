@@ -44,6 +44,10 @@ static void WaitForFreeSpace(NVDevEvoPtr pDevEvo,
     NvU64 startTime = 0;
     const NvU64 timeout = 100000; /* 0.1 seconds */
 
+    if (pDevEvo->excluded) {
+        return;
+    }
+
     do {
         if (pEvoCursorControl->Free != 0) {
             return;

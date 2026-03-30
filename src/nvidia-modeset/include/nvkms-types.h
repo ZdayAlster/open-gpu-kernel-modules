@@ -1177,6 +1177,17 @@ typedef struct _NVEvoDevRec {
      */
     NvBool badFramelockFirmware;
 
+    /*
+     * WBX: Set when the GPU is excluded due to a fatal PCIe AER error.
+     * When set, nvEvoMakeRoom() and nvEvoPollForEmptyChannel() will bail
+     * out immediately instead of spinning forever trying to read GPU
+     * registers from a frozen device.
+     *
+     * Set by nvKmsKapiRemoveExcluded() → DRM removeExcluded callback chain.
+     * Not cleared until the device is fully removed and re-probed.
+     */
+    NvBool excluded;
+
     const struct _nv_evo_hal *hal;
     const struct _nv_evo_cursor_hal *cursorHal;
 

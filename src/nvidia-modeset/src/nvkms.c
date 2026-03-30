@@ -6836,6 +6836,37 @@ void nvKmsResume(NvU32 gpuId)
     }
 }
 
+/*
+ * nvEvoSetDeviceExcluded - Mark a device as excluded due to AER fatal.
+ *
+ * Iterates the global device list and sets the excluded flag on the matching
+ * NVDevEvoRec.  This causes all subsequent DMA push operations
+ * (nvEvoMakeRoom, nvEvoPollForEmptyChannel, nvDmaKickoffEvo) to bail out
+ * immediately instead of spinning on frozen GPU registers.
+ *
+ * Called from the PCIe AER error_detected path before invoking the DRM
+ * removeExcluded callback.
+ */
+void nvEvoSetDeviceExcluded(NvU32 gpuId)
+{
+    NVDevEvoPtr pDevEvo;
+
+    FOR_ALL_EVO_DEVS(pDevEvo) {
+        if (pDevEvo->gpuId == gpuId) {
+            if (!pDevEvo->excluded) {
+                nvEvoLogDev(pDevEvo, EVO_LOG_ERROR,
+                    "GPU excluded due to fatal PCIe AER; "
+                    "all DMA push operations will be no-ops");
+                pDevEvo->excluded = NV_TRUE;
+            }
+            return;
+        }
+    }
+
+    nvEvoLog(EVO_LOG_WARN,
+        "nvEvoSetDeviceExcluded: gpuId 0x%x not found", gpuId);
+}
+
 static void ServiceOneDeferredRequestFifo(
     NVDevEvoPtr pDevEvo,
     NVDeferredRequestFifoRec *pDeferredRequestFifo)

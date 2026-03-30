@@ -39,6 +39,15 @@ void nvDmaKickoffEvo(NVEvoChannelPtr pChannel)
     NVDmaBufferEvoPtr p = &pChannel->pb;
     NvU32 putOffset = (NvU32)((char *)p->buffer - (char *)p->base);
 
+    /*
+     * WBX: If GPU is excluded due to AER fatal, bail out.  PIO writes via
+     * nvDmaStorePioMethod below would either fail silently or hang on a
+     * frozen device.
+     */
+    if (p->pDevEvo->excluded) {
+        return;
+    }
+
     if (p->put_offset == putOffset) {
         return;
     }
@@ -110,6 +119,16 @@ NvBool nvEvoPollForEmptyChannel(NVEvoChannelPtr pChannel, NvU32 sd,
 {
     NVDmaBufferEvoPtr push_buffer = &pChannel->pb;
 
+    /*
+     * WBX: If the GPU is excluded due to AER fatal error, bail out
+     * immediately.  The busy-wait loop below reads GPU registers via PIO;
+     * on a frozen device those reads return garbage and the loop never
+     * terminates.
+     */
+    if (push_buffer->pDevEvo->excluded) {
+        return FALSE;
+    }
+
     do {
         if (EvoCoreReadGet(push_buffer, sd) == push_buffer->put_offset) {
             break;
@@ -132,6 +151,16 @@ void nvEvoMakeRoom(NVEvoChannelPtr pChannel, NvU32 count)
     NvU32 putOffset;
     NvU64 startTime = 0;
     const NvU64 timeout = 5000000; /* 5 seconds */
+
+    /*
+     * WBX: If the GPU is excluded due to AER fatal error, bail out
+     * immediately. Otherwise the busy-wait loop below will spin forever
+     * trying to read frozen PCI registers, printing the error message
+     * every 5 seconds and preventing clean shutdown.
+     */
+    if (push_buffer->pDevEvo->excluded) {
+        return;
+    }
 
     putOffset = (NvU32) ((char *)push_buffer->buffer -
                          (char *)push_buffer->base);
@@ -234,6 +263,14 @@ static NvBool EvoCheckNotifier(const NVDispEvoRec *pDispEvo,
     NVDmaBufferEvoPtr p = &pDevEvo->core->pb;
     volatile NvU32 *pNotifier;
     NvU64 startTime = 0;
+
+    /*
+     * WBX: If the GPU is excluded due to AER fatal error, bail out
+     * immediately rather than wait for a notifier that will never complete.
+     */
+    if (pDevEvo->excluded) {
+        return FALSE;
+    }
 
     pNotifier = pSubChannel->cpuAddress;
 
@@ -428,6 +465,15 @@ NvBool nvEvoWaitForCRC32Notifier(const NVDevEvoPtr pDevEvo,
     const NvU32 done_mask = DRF_SHIFTMASK(done_extent_bit:done_base_bit);
     const NvU32 done_val = done_value << done_base_bit;
     NvU64 startTime = 0;
+
+    /*
+     * WBX: If the GPU is excluded due to AER fatal error, bail out
+     * immediately rather than wait for a CRC notifier that will never
+     * complete.
+     */
+    if (pDevEvo->excluded) {
+        return FALSE;
+    }
 
     nvAssert(pCRC32Notifier != NULL);
     pCRC32Notifier += offset;

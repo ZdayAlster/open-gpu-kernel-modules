@@ -2049,19 +2049,19 @@ static void nv_stop_device(nv_state_t *nv, nvidia_stack_t *sp)
     static int persistence_mode_notice_logged;
 
     /*
-     * The GPU needs to be powered on to go through the teardown sequence.
-     * This balances the FINE unref at the end of nv_start_device().
-     */
-    rm_ref_dynamic_power(sp, nv, NV_DYNAMIC_PM_FINE);
-
-    /*
      * If the GPU has fallen off the bus (AER fatal, Xid 79, surprise removal),
-     * skip the RM teardown path entirely. Calling rm_disable_adapter() or
-     * rm_shutdown_adapter() when the GPU is lost will cause RPC calls to the
-     * GSP firmware to time out (up to ~110s per RPC), which is exactly why
-     * `systemctl stop nvidia-persistenced` hangs after an AER injection.
+     * skip the RM teardown path entirely. Calling rm_ref_dynamic_power(),
+     * rm_disable_adapter() or rm_shutdown_adapter() when the GPU is lost will
+     * cause RPC calls to the GSP firmware to time out (up to ~110s per RPC),
+     * which is exactly why `systemctl stop nvidia-persistenced` hangs after
+     * an AER injection.
      *
-     * Four conditions cover the GPU-lost cases:
+     * IMPORTANT: This check MUST come before rm_ref_dynamic_power() below,
+     * because rm_ref_dynamic_power() also issues GSP RPCs that will hang
+     * on a lost GPU.  Previously this check was placed after that call,
+     * which caused it to never be reached on 5090D (GSP RPC timeout ~60s).
+     *
+     * Five conditions cover the GPU-lost cases:
      *   nv->removed                 - set by nvidia_pci_remove() after AER
      *                                 pci_channel_io_perm_failure or hot-unplug
      *   NV_FLAG_IN_SURPRISE_REMOVAL - set by the eGPU surprise-removal path
@@ -2075,18 +2075,33 @@ static void nv_stop_device(nv_state_t *nv, nvidia_stack_t *sp)
      *                                 before calling error_detected, so checking
      *                                 it here catches the race without depending
      *                                 on the flag ordering.
+     *   !pci_device_is_present()    - detect GPU lost without AER notification
+     *                                 (spontaneous PCIe link loss, firmware
+     *                                 crash without AER, etc.)
      *
      * In all these cases the hardware is inaccessible. We still need to stop
      * the bottom-half/queue kthreads to avoid further GPU access attempts, but
-     * we must not call rm_disable_adapter() or rm_shutdown_adapter() which
-     * would block on GSP RPC responses that will never come.
+     * we must not call any GSP RPC which would block forever.
      */
     if (nv->removed || NV_IS_DEVICE_IN_SURPRISE_REMOVAL(nv) ||
         (nv->flags & NV_FLAG_EXCLUDE) ||
-        (dev_is_pci(nvl->dev) && nvl->pci_dev->error_state != pci_channel_io_normal))
+        (dev_is_pci(nvl->dev) && nvl->pci_dev->error_state != pci_channel_io_normal) ||
+        (dev_is_pci(nvl->dev) && !pci_device_is_present(nvl->pci_dev)))
     {
         NV_DEV_PRINTF(NV_DBG_WARNINGS, nv,
             "GPU lost/excluded, skipping RM teardown to avoid RPC timeout\n");
+
+        /*
+         * If the GPU was lost but EXCLUDE was not already set (e.g.,
+         * non-AER spontaneous loss detected via pci_device_is_present),
+         * mark it as excluded now.
+         */
+        if (!(nv->flags & NV_FLAG_EXCLUDE))
+        {
+            LOCK_NV_LINUX_DEVICES();
+            nv->flags |= NV_FLAG_EXCLUDE;
+            UNLOCK_NV_LINUX_DEVICES();
+        }
 
         /* Stop kthreads so they no longer attempt to access the lost GPU */
         if (!(nv->flags & NV_FLAG_PERSISTENT_SW_STATE))
@@ -2103,47 +2118,10 @@ static void nv_stop_device(nv_state_t *nv, nvidia_stack_t *sp)
     }
 
     /*
-     * Detect GPU lost from bus without AER notification.
-     *
-     * Some GPU failures (e.g., spontaneous PCIe link loss, firmware crash
-     * without AER, or internal Xid that doesn't trigger the AER path) will
-     * cause the GPU to become inaccessible but none of the flags above are
-     * set.  In that case, pci_device_is_present() will return false because
-     * the PCI config space reads return 0xFFFFFFFF.
-     *
-     * Without this check, nv_stop_device() would still call
-     * rm_disable_adapter() / nv_shutdown_adapter(), which issue GSP RPCs
-     * that time out (~110s each), causing:
-     *   - systemctl stop nvidia-persistenced hanging
-     *   - Container restart blocking for minutes
-     *   - Cascading failures on other GPUs due to UVM fatal_error
-     *
-     * When the GPU is physically absent, mark it as excluded so that
-     * nvidia_read_card_info() and subsequent open attempts skip it.
+     * The GPU needs to be powered on to go through the teardown sequence.
+     * This balances the FINE unref at the end of nv_start_device().
      */
-    if (dev_is_pci(nvl->dev) && !pci_device_is_present(nvl->pci_dev))
-    {
-        NV_DEV_PRINTF(NV_DBG_WARNINGS, nv,
-            "GPU not present on PCI bus during device stop, "
-            "skipping RM teardown and marking as excluded\n");
-
-        LOCK_NV_LINUX_DEVICES();
-        nv->flags |= NV_FLAG_EXCLUDE;
-        UNLOCK_NV_LINUX_DEVICES();
-
-        /* Stop kthreads so they no longer attempt to access the lost GPU */
-        if (!(nv->flags & NV_FLAG_PERSISTENT_SW_STATE))
-        {
-            nv_acpi_unregister_notifier(nvl);
-            nv_kthread_q_stop(&nvl->bottom_half_q);
-            if (nv->queue != NULL)
-            {
-                nv->queue = NULL;
-                nv_kthread_q_stop(&nvl->queue.nvk);
-            }
-        }
-        goto skip_rm_teardown;
-    }
+    rm_ref_dynamic_power(sp, nv, NV_DYNAMIC_PM_FINE);
 
     /* Adapter is already shutdown as part of nvidia_pci_remove */
     if (!nv->removed)
@@ -2200,7 +2178,7 @@ skip_rm_teardown:
         (nv->flags & NV_FLAG_AER_NEEDS_REINIT) &&
         dev_is_pci(nvl->dev) && pci_device_is_present(nvl->pci_dev))
     {
-        nv_printf(NV_DBG_WARNINGS, nv,
+        nv_printf(NV_DBG_WARNINGS,
             "AER recovered: all clients closed, GPU present on bus, "
             "clearing EXCLUDE for reinit on next open\n");
         nv->flags &= ~NV_FLAG_EXCLUDE;
