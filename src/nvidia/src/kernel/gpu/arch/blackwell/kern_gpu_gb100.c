@@ -343,6 +343,17 @@ gpuWriteBusConfigCycle_GB100
         pGpu->hPci = osPciInitHandle(domain, bus, device, function, NULL, NULL);
     }
 
+    /* WBX: osPciInitHandle may return NULL if device is not on the bus
+     * (e.g., after AER fatal or surprise removal). Guard against NULL
+     * to prevent kernel panic in osPciWriteDword/osPciReadDword. */
+    if (pGpu->hPci == NULL)
+    {
+        NV_PRINTF(LEVEL_ERROR,
+                  "GPU %04x:%02x:%02x.%x: PCI handle NULL, cannot write config reg 0x%x\n",
+                  domain, bus, device, function, hwDefAddr);
+        return NV_ERR_INVALID_STATE;
+    }
+
     // Find config register address via linked list traversal
     status = _gpuFindPcieRegAddr_GB100(pGpu->hPci, hwDefAddr, &regAddr);
     if (status == NV_OK)
@@ -419,6 +430,17 @@ gpuReadBusConfigCycle_GB100
     if (pGpu->hPci == NULL)
     {
         pGpu->hPci = osPciInitHandle(domain, bus, device, function, NULL, NULL);
+    }
+
+    /* WBX: osPciInitHandle may return NULL if device is not on the bus.
+     * Guard against NULL to prevent kernel panic. */
+    if (pGpu->hPci == NULL)
+    {
+        NV_PRINTF(LEVEL_ERROR,
+                  "GPU %04x:%02x:%02x.%x: PCI handle NULL, cannot read config reg 0x%x\n",
+                  domain, bus, device, function, hwDefAddr);
+        *pData = 0xFFFFFFFF;
+        return NV_ERR_INVALID_STATE;
     }
 
     // Find config register address via linked list traversal

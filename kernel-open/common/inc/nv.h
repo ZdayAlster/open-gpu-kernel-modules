@@ -689,6 +689,10 @@ typedef struct UvmGpuAccessBitsBufferAlloc_tag      *nvgpuAccessBitBufferAlloc_t
 #define NV_FLAG_UNBIND_LOCK                     0x4000
 /* To be set when GPU is not present on the bus, to help device teardown */
 #define NV_FLAG_IN_SURPRISE_REMOVAL             0x8000
+/* WBX: Set by AER slot_reset when GPU recovers but still has open clients.
+ * Cleared by nv_stop_device when last client closes and device is present.
+ * Allows automatic GPU reinitialization after AER recovery without reboot. */
+#define NV_FLAG_AER_NEEDS_REINIT               0x10000
 
 typedef enum
 {

@@ -102,6 +102,22 @@ gpuReadBusConfigCycle_GM107
 
     if (IS_PASSTHRU(pGpu) && !bIsCCFeatureEnabled)
     {
+        /* WBX: gpuReadPassThruConfigReg_HAL also accesses pGpu->hPci
+         * internally. If the device fell off the bus (AER fatal, surprise
+         * removal), hPci may be NULL or point to a stale pci_dev.
+         * Check presence before accessing. */
+        if (pGpu->hPci == NULL)
+        {
+            pGpu->hPci = osPciInitHandle(domain, bus, device, function, NULL, NULL);
+        }
+        if (pGpu->hPci == NULL)
+        {
+            NV_PRINTF(LEVEL_ERROR,
+                      "GPU %04x:%02x:%02x.%x: PCI handle NULL, cannot read config reg 0x%x\n",
+                      domain, bus, device, function, hwDefAddr);
+            *pData = 0xFFFFFFFF;
+            return NV_ERR_INVALID_STATE;
+        }
         gpuReadPassThruConfigReg_HAL(pGpu, hwDefAddr, pData);
     }
     else
@@ -109,6 +125,15 @@ gpuReadBusConfigCycle_GM107
         if (pGpu->hPci == NULL)
         {
             pGpu->hPci = osPciInitHandle(domain, bus, device, function, NULL, NULL);
+        }
+
+        if (pGpu->hPci == NULL)
+        {
+            NV_PRINTF(LEVEL_ERROR,
+                      "GPU %04x:%02x:%02x.%x: PCI handle NULL, cannot read config reg 0x%x\n",
+                      domain, bus, device, function, hwDefAddr);
+            *pData = 0xFFFFFFFF;
+            return NV_ERR_INVALID_STATE;
         }
 
         *pData = osPciReadDword(pGpu->hPci, hwDefAddr);
@@ -149,6 +174,14 @@ gpuWriteBusConfigCycle_GM107
     if (pGpu->hPci == NULL)
     {
         pGpu->hPci = osPciInitHandle(domain, bus, device, function, NULL, NULL);
+    }
+
+    if (pGpu->hPci == NULL)
+    {
+        NV_PRINTF(LEVEL_ERROR,
+                  "GPU %04x:%02x:%02x.%x: PCI handle NULL, cannot write config reg 0x%x\n",
+                  domain, bus, device, function, hwDefAddr);
+        return NV_ERR_INVALID_STATE;
     }
 
     osPciWriteDword(pGpu->hPci, hwDefAddr, value);

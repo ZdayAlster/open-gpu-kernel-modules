@@ -135,6 +135,17 @@ gpuReadPcieConfigCycle_GB202
         pGpu->hPci = osPciInitHandle(domain, bus, device, function, NULL, NULL);
     }
 
+    /* WBX: osPciInitHandle may return NULL if device is not on the bus.
+     * Guard against NULL to prevent kernel panic in osPciReadDword. */
+    if (pGpu->hPci == NULL)
+    {
+        NV_PRINTF(LEVEL_ERROR,
+                  "GPU %04x:%02x:%02x.%x: PCI handle NULL, cannot read config reg 0x%x\n",
+                  domain, bus, device, function, hwDefAddr);
+        *pData = 0xFFFFFFFF;
+        return NV_ERR_INVALID_STATE;
+    }
+
     *pData = osPciReadDword(pGpu->hPci, hwDefAddr);
 
     return NV_OK;
@@ -174,6 +185,16 @@ gpuWritePcieConfigCycle_GB202
     if (pGpu->hPci == NULL)
     {
         pGpu->hPci = osPciInitHandle(domain, bus, device, function, NULL, NULL);
+    }
+
+    /* WBX: osPciInitHandle may return NULL if device is not on the bus.
+     * Guard against NULL to prevent kernel panic in osPciWriteDword. */
+    if (pGpu->hPci == NULL)
+    {
+        NV_PRINTF(LEVEL_ERROR,
+                  "GPU %04x:%02x:%02x.%x: PCI handle NULL, cannot write config reg 0x%x\n",
+                  domain, bus, device, function, hwDefAddr);
+        return NV_ERR_INVALID_STATE;
     }
 
     osPciWriteDword(pGpu->hPci, hwDefAddr, value);

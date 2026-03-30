@@ -2169,6 +2169,35 @@ skip_rm_teardown:
     /* leave INIT flag alone so we don't reinit every time */
     nv->flags &= ~NV_FLAG_OPEN;
 
+    /*
+     * WBX: AER recovery reinit gate.
+     *
+     * When an AER fatal error occurs, error_detected() sets NV_FLAG_EXCLUDE.
+     * If PCIe slot reset succeeds (hardware link restored), slot_reset()
+     * sets NV_FLAG_AER_NEEDS_REINIT for in-use GPUs instead of keeping
+     * EXCLUDE permanently.
+     *
+     * Now that all clients have closed (usage_count reached 0, NV_FLAG_OPEN
+     * just cleared above), check if the GPU can be returned to service:
+     *   - EXCLUDE must be set (we are in the AER recovery path)
+     *   - AER_NEEDS_REINIT must be set (PCIe slot reset succeeded)
+     *   - GPU must be physically present (pci_device_is_present)
+     *
+     * If all conditions are met, clear both flags so the next open() will
+     * go through nv_start_device() -> rm_init_adapter() -> RmInitAdapter(),
+     * which performs a full RM reinitialization including GSP firmware reload.
+     */
+    if ((nv->flags & NV_FLAG_EXCLUDE) &&
+        (nv->flags & NV_FLAG_AER_NEEDS_REINIT) &&
+        dev_is_pci(nvl->dev) && pci_device_is_present(nvl->pci_dev))
+    {
+        nv_printf(NV_DBG_WARNINGS, nv,
+            "AER recovered: all clients closed, GPU present on bus, "
+            "clearing EXCLUDE for reinit on next open\n");
+        nv->flags &= ~NV_FLAG_EXCLUDE;
+        nv->flags &= ~NV_FLAG_AER_NEEDS_REINIT;
+    }
+
     if (!(nv->flags & NV_FLAG_PERSISTENT_SW_STATE))
     {
         rm_unref_dynamic_power(sp, nv, NV_DYNAMIC_PM_COARSE);

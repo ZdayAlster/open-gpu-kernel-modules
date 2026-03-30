@@ -2802,9 +2802,21 @@ nv_pci_slot_reset(struct pci_dev *pdev)
     {
         nv_printf(NV_DBG_WARNINGS,
                   "NVRM: GPU %04x:%02x:%02x.%x recovered but was in use, "
-                  "keeping excluded until clients reopen\n",
+                  "marking for reinit after clients close\n",
                   NV_PCI_DOMAIN_NUMBER(pdev), NV_PCI_BUS_NUMBER(pdev),
                   NV_PCI_SLOT_NUMBER(pdev), PCI_FUNC(pdev->devfn));
+
+        /*
+         * WBX: PCIe link has recovered, but the GPU has open clients with
+         * stale state. We cannot reinitialize RM now because clients hold
+         * references. Set AER_NEEDS_REINIT so nv_stop_device() can detect
+         * this and clear EXCLUDE when the last client closes.
+         *
+         * This avoids the scenario where a recovered GPU is permanently
+         * excluded even after all CUDA processes have exited, which would
+         * otherwise require rmmod or reboot.
+         */
+        nv->flags |= NV_FLAG_AER_NEEDS_REINIT;
     }
 
     return PCI_ERS_RESULT_RECOVERED;
