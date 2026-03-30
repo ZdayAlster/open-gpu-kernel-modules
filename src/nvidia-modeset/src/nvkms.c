@@ -6850,16 +6850,19 @@ void nvKmsResume(NvU32 gpuId)
 void nvEvoSetDeviceExcluded(NvU32 gpuId)
 {
     NVDevEvoPtr pDevEvo;
+    NvU32 i;
 
     FOR_ALL_EVO_DEVS(pDevEvo) {
-        if (pDevEvo->gpuId == gpuId) {
-            if (!pDevEvo->excluded) {
-                nvEvoLogDev(pDevEvo, EVO_LOG_ERROR,
-                    "GPU excluded due to fatal PCIe AER; "
-                    "all DMA push operations will be no-ops");
-                pDevEvo->excluded = NV_TRUE;
+        for (i = 0; i < ARRAY_LEN(pDevEvo->openedGpuIds); i++) {
+            if (pDevEvo->openedGpuIds[i] == gpuId) {
+                if (!pDevEvo->excluded) {
+                    nvEvoLogDev(pDevEvo, EVO_LOG_ERROR,
+                        "GPU excluded due to fatal PCIe AER; "
+                        "all DMA push operations will be no-ops");
+                    pDevEvo->excluded = NV_TRUE;
+                }
+                return;
             }
-            return;
         }
     }
 
