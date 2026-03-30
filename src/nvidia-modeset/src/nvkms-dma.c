@@ -134,6 +134,14 @@ NvBool nvEvoPollForEmptyChannel(NVEvoChannelPtr pChannel, NvU32 sd,
             break;
         }
 
+        /*
+         * WBX: Re-check excluded inside the loop.  The GPU may become
+         * excluded (AER fatal) while this thread is already polling.
+         */
+        if (push_buffer->pDevEvo->excluded) {
+            return FALSE;
+        }
+
         if (nvExceedsTimeoutUSec(push_buffer->pDevEvo, pStartTime, timeout)) {
             return FALSE;
         }
@@ -173,6 +181,15 @@ void nvEvoMakeRoom(NVEvoChannelPtr pChannel, NvU32 count)
     }
 
     while (1) {
+        /*
+         * WBX: Re-check excluded inside the loop.  AER error may be detected
+         * while this thread is already spinning inside the loop.  Without this
+         * check, the loop never terminates because the GPU is frozen.
+         */
+        if (push_buffer->pDevEvo->excluded) {
+            return;
+        }
+
         getOffset = EvoReadGetOffset(push_buffer, TRUE);
 
         if (putOffset >= getOffset) {
