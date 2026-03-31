@@ -2287,6 +2287,51 @@ nv_pci_remove(struct pci_dev *pci_dev)
 
     num_nv_devices--;
 
+    /*
+     * WBX: Safety net for MSI IRQ leak.
+     *
+     * Normally MSI vectors are freed in nv_shutdown_adapter() (called from
+     * nv_stop_device on last close, or directly here when OPEN/PERSISTENT).
+     * However, in the AER-excluded path:
+     *   1. nv_stop_device() skips nv_shutdown_adapter() to avoid GSP RPC timeout
+     *      (GPU-lost fast path) — but now frees MSI before skip_rm_teardown.
+     *   2. If no client ever opened the GPU (usage_count stayed 0), neither
+     *      nv_stop_device nor nv_shutdown_adapter was ever called.
+     *
+     * As a safety net, check if MSI/MSI-X vectors are still allocated and
+     * free them here.  free_irq() is idempotent-safe if already freed (returns
+     * -EINVAL), and pci_disable_msix()/NV_PCI_DISABLE_MSI() are no-ops if
+     * MSI was already torn down.  This runs before NV_PCI_DISABLE_DEVICE so
+     * the PCI device is still in a state where the kernel can clean up its
+     * irq_domain mappings.
+     */
+    if (nv->flags & NV_FLAG_USES_MSI)
+    {
+        free_irq(nv->interrupt_line, (void *)nvl);
+        NV_PCI_DISABLE_MSI(pci_dev);
+        nv->flags &= ~NV_FLAG_USES_MSI;
+        if (nvl->irq_count)
+        {
+            NV_KFREE(nvl->irq_count,
+                     nvl->num_intr * sizeof(nv_irq_count_info_t));
+            nvl->irq_count = NULL;
+        }
+    }
+#if defined(NV_LINUX_PCIE_MSI_SUPPORTED)
+    else if (nv->flags & NV_FLAG_USES_MSIX)
+    {
+        nv_free_msix_irq(nvl);
+        pci_disable_msix(pci_dev);
+        nv->flags &= ~NV_FLAG_USES_MSIX;
+        NV_KFREE(nvl->msix_entries,
+                 nvl->num_intr * sizeof(struct msix_entry));
+        nvl->msix_entries = NULL;
+        NV_KFREE(nvl->irq_count,
+                 nvl->num_intr * sizeof(nv_irq_count_info_t));
+        nvl->irq_count = NULL;
+    }
+#endif
+
     if (atomic64_read(&nvl->usage_count) == 0)
     {
         NV_PCI_DISABLE_DEVICE(pci_dev);

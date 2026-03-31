@@ -2114,6 +2114,62 @@ static void nv_stop_device(nv_state_t *nv, nvidia_stack_t *sp)
                 nv_kthread_q_stop(&nvl->queue.nvk);
             }
         }
+
+        /*
+         * WBX: Free MSI/MSI-X interrupt vectors even though we skip RM teardown.
+         *
+         * Without this, after an AER-injected GPU is excluded and clients exit,
+         * the MSI irq_desc entries remain mapped in the kernel's irq_domain.
+         * A subsequent sysfs remove + rescan triggers:
+         *   WARNING: irq_domain_remove with active mappings
+         *   WARNING: msi_device_data_release with stale MSI descriptors
+         * The leaked/stale irq_desc is later accessed by show_interrupts()
+         * (via /proc/interrupts), hitting freed SLUB memory and causing a
+         * kernel panic (page fault at address 0x1000).
+         *
+         * free_irq() and pci_disable_msix()/NV_PCI_DISABLE_MSI() are safe
+         * to call on a lost GPU — they only manipulate the kernel's interrupt
+         * bookkeeping (irq_desc, irq_domain, MSI descriptors) and do not
+         * touch GPU hardware registers. The MSI address/data is written by
+         * the kernel during request_irq(), not read back during free_irq().
+         */
+        if (!(nv->flags & NV_FLAG_USES_MSIX) &&
+            !(nv->flags & NV_FLAG_SOC_DISPLAY))
+        {
+            free_irq(nv->interrupt_line, (void *)nvl);
+            if (nv->flags & NV_FLAG_USES_MSI)
+            {
+                NV_PCI_DISABLE_MSI(nvl->pci_dev);
+                if (nvl->irq_count)
+                {
+                    NV_KFREE(nvl->irq_count,
+                             nvl->num_intr * sizeof(nv_irq_count_info_t));
+                }
+            }
+        }
+        else if (nv->flags & NV_FLAG_SOC_DISPLAY)
+        {
+            nv_soc_free_irqs(nv);
+        }
+#if defined(NV_LINUX_PCIE_MSI_SUPPORTED)
+        else
+        {
+            nv_free_msix_irq(nvl);
+            pci_disable_msix(nvl->pci_dev);
+            nv->flags &= ~NV_FLAG_USES_MSIX;
+            NV_KFREE(nvl->msix_entries,
+                     nvl->num_intr * sizeof(struct msix_entry));
+            NV_KFREE(nvl->irq_count,
+                     nvl->num_intr * sizeof(nv_irq_count_info_t));
+        }
+#endif
+
+        if (nvl->msix_bh_mutex)
+        {
+            os_free_mutex(nvl->msix_bh_mutex);
+            nvl->msix_bh_mutex = NULL;
+        }
+
         goto skip_rm_teardown;
     }
 
