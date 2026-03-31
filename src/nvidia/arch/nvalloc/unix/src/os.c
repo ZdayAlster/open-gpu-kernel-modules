@@ -5709,6 +5709,30 @@ osIsGpuShutdown
 }
 
 /*!
+ * @brief Check whether GPU has been excluded due to an AER fatal PCIe error.
+ *
+ * The NV_FLAG_EXCLUDE bit is set synchronously by nv_pci_error_detected()
+ * before GSP sees the channel error, so this flag is reliably visible by
+ * the time krcErrorSetNotifier() runs.
+ *
+ * @param[in]  pGpu  GPU object pointer
+ * @returns NV_TRUE when the GPU is excluded (AER or permanent failure path)
+ *
+ * WBX: Added for AER per-GPU reboot isolation.
+ */
+NvBool
+osIsGpuExcluded
+(
+    OBJGPU *pGpu
+)
+{
+    nv_state_t *nv = NV_GET_NV_STATE(pGpu);
+    return nv ? ((nv->flags & NV_FLAG_EXCLUDE) != 0) : NV_FALSE;
+}
+
+
+
+/*!
  * @brief Check GPU OS info matches
  *
  * @param[in]  pGpu           GPU object pointer

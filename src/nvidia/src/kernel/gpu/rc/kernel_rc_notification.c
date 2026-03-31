@@ -256,10 +256,27 @@ NV_STATUS krcErrorSetNotifier_IMPL
     // WAR bug 4503046: mark reboot required when any UVM channels receive an
     // error.
     //
+    // WBX AER isolation: skip the global reboot flag when this GPU has already
+    // been excluded by the AER error_detected() handler (NV_FLAG_EXCLUDE set).
+    // In that case the GPU is isolated at the PCIe level; only the affected GPU
+    // needs recovery, not the whole system.  The UVM per-GPU broken path
+    // (uvm_channel.c → uvm_gpu_set_broken) handles the per-GPU teardown.
+    //
     if (pKernelChannel->bUvmOwned)
     {
-        sysSetRecoveryRebootRequired(pSys, NV_TRUE);
+        if (osIsGpuExcluded(pGpu))
+        {
+            NV_PRINTF(LEVEL_NOTICE,
+                "UVM channel error on AER-excluded GPU %u, "
+                "skipping global reboot-required flag\n",
+                pGpu->gpuInstance);
+        }
+        else
+        {
+            sysSetRecoveryRebootRequired(pSys, NV_TRUE);
+        }
     }
+
 
     //
     // WAR bug 200326278, 200474671

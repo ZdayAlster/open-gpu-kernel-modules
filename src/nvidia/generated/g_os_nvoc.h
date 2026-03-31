@@ -1084,6 +1084,9 @@ void osQueueResumeP2PHandler(NvU8 *);
 
 NvBool osIsGpuAccessible(OBJGPU *pGpu);
 NvBool osIsGpuShutdown(OBJGPU *pGpu);
+// WBX: Returns NV_TRUE when GPU has been excluded due to AER fatal error.
+// Used to skip global reboot-required when only one GPU is affected.
+NvBool osIsGpuExcluded(OBJGPU *pGpu);
 
 NvBool osMatchGpuOsInfo(OBJGPU *pGpu, void *pOsInfo);
 
