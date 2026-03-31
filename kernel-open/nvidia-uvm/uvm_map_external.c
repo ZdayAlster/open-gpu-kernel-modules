@@ -1192,6 +1192,15 @@ static NV_STATUS uvm_map_external_sparse(uvm_va_space_t *va_space, UVM_MAP_EXTER
         goto out;
     }
 
+    // WBX: Refuse to map sparse on a broken GPU.
+    if (uvm_gpu_is_broken(mapping_gpu)) {
+        UVM_ERR_PRINT("Refusing to map external sparse on broken GPU %s (error: %s)\n",
+                      uvm_gpu_name(mapping_gpu),
+                      nvstatusToString(uvm_gpu_get_broken_status(mapping_gpu)));
+        status = NV_ERR_INVALID_DEVICE;
+        goto out;
+    }
+
     // Sparse mappings are unsupported on GPUs prior to Pascal.
     if (!mapping_gpu->parent->sparse_mappings_supported) {
         status = NV_ERR_INVALID_DEVICE;

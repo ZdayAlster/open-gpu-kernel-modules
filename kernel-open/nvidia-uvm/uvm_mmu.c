@@ -3043,6 +3043,15 @@ NV_STATUS uvm_test_invalidate_tlb(UVM_TEST_INVALIDATE_TLB_PARAMS *params, struct
         goto unlock_exit;
     }
 
+    // WBX: Refuse test on a broken GPU.
+    if (uvm_gpu_is_broken(gpu)) {
+        UVM_ERR_PRINT("Refusing TLB invalidate test on broken GPU %s (error: %s)\n",
+                      uvm_gpu_name(gpu),
+                      nvstatusToString(uvm_gpu_get_broken_status(gpu)));
+        status = NV_ERR_INVALID_DEVICE;
+        goto unlock_exit;
+    }
+
     gpu_va_space = uvm_gpu_va_space_get(va_space, gpu);
     UVM_ASSERT(gpu_va_space);
 

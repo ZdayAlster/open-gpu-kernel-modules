@@ -3091,6 +3091,15 @@ NV_STATUS uvm_test_drain_replayable_faults(UVM_TEST_DRAIN_REPLAYABLE_FAULTS_PARA
     if (!gpu)
         return NV_ERR_INVALID_DEVICE;
 
+    // WBX: Refuse test on a broken GPU.
+    if (uvm_gpu_is_broken(gpu)) {
+        UVM_ERR_PRINT("Refusing drain replayable faults test on broken GPU %s (error: %s)\n",
+                      uvm_gpu_name(gpu),
+                      nvstatusToString(uvm_gpu_get_broken_status(gpu)));
+        uvm_gpu_release(gpu);
+        return NV_ERR_INVALID_DEVICE;
+    }
+
     uvm_spin_loop_init(&spin);
 
     do {

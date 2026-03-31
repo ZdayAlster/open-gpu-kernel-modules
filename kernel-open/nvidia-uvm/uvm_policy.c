@@ -974,6 +974,15 @@ static NV_STATUS system_wide_atomics_set(uvm_va_space_t *va_space, const NvProce
         goto done;
     }
 
+    // WBX: Refuse to set system_wide_atomics on a broken GPU.
+    if (uvm_gpu_is_broken(gpu)) {
+        UVM_ERR_PRINT("Refusing to set system_wide_atomics on broken GPU %s (error: %s)\n",
+                      uvm_gpu_name(gpu),
+                      nvstatusToString(uvm_gpu_get_broken_status(gpu)));
+        status = NV_ERR_INVALID_DEVICE;
+        goto done;
+    }
+
     if (gpu->parent->scoped_atomics_supported) {
         status = NV_ERR_NOT_SUPPORTED;
         goto done;

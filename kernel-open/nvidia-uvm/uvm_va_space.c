@@ -773,6 +773,16 @@ NV_STATUS uvm_va_space_register_gpu(uvm_va_space_t *va_space,
     if (status != NV_OK)
         return status;
 
+    // WBX: Check if this GPU has been marked broken due to AER fatal error.
+    // If so, refuse to register it with the VA space.
+    if (uvm_gpu_is_broken(gpu)) {
+        UVM_ERR_PRINT("Refusing to register broken GPU %s (error: %s) with VA space\n",
+                      uvm_gpu_name(gpu),
+                      nvstatusToString(uvm_gpu_get_broken_status(gpu)));
+        uvm_gpu_release(gpu);
+        return NV_ERR_INVALID_DEVICE;
+    }
+
     uvm_uuid_copy(uuid_out, &gpu->uuid);
 
     // Enabling access counters requires taking the ISR lock, so it is done
@@ -1680,6 +1690,15 @@ NV_STATUS uvm_va_space_register_gpu_va_space(uvm_va_space_t *va_space,
     gpu = uvm_va_space_retain_gpu_by_uuid(va_space, gpu_uuid);
     if (!gpu)
         return NV_ERR_INVALID_DEVICE;
+
+    // WBX: Refuse to register a GPU VA space on a broken GPU.
+    if (uvm_gpu_is_broken(gpu)) {
+        UVM_ERR_PRINT("Refusing to register GPU VA space on broken GPU %s (error: %s)\n",
+                      uvm_gpu_name(gpu),
+                      nvstatusToString(uvm_gpu_get_broken_status(gpu)));
+        uvm_gpu_release(gpu);
+        return NV_ERR_INVALID_DEVICE;
+    }
 
     mm = uvm_va_space_mm_or_current_retain(va_space);
     if (!mm) {

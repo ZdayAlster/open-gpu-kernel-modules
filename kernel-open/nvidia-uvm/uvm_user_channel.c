@@ -110,6 +110,14 @@ static NV_STATUS uvm_user_channel_create(uvm_va_space_t *va_space,
     if (!gpu)
         return NV_ERR_INVALID_DEVICE;
 
+    // WBX: Refuse to create user channel on a broken GPU.
+    if (uvm_gpu_is_broken(gpu)) {
+        UVM_ERR_PRINT("Refusing to create user channel on broken GPU %s (error: %s)\n",
+                      uvm_gpu_name(gpu),
+                      nvstatusToString(uvm_gpu_get_broken_status(gpu)));
+        return NV_ERR_INVALID_DEVICE;
+    }
+
     user_channel = uvm_kvmalloc_zero(sizeof(*user_channel));
     if (!user_channel)
         return NV_ERR_NO_MEMORY;

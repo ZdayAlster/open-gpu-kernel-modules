@@ -3621,6 +3621,17 @@ NV_STATUS uvm_test_evict_chunk(UVM_TEST_EVICT_CHUNK_PARAMS *params, struct file 
         uvm_va_space_mm_or_current_release_unlock(va_space, mm);
         return NV_ERR_INVALID_DEVICE;
     }
+
+    // WBX: Refuse test on a broken GPU.
+    if (uvm_gpu_is_broken(gpu)) {
+        UVM_ERR_PRINT("Refusing evict chunk test on broken GPU %s (error: %s)\n",
+                      uvm_gpu_name(gpu),
+                      nvstatusToString(uvm_gpu_get_broken_status(gpu)));
+        uvm_va_space_up_read(va_space);
+        uvm_va_space_mm_or_current_release_unlock(va_space, mm);
+        return NV_ERR_INVALID_DEVICE;
+    }
+
     pmm = &gpu->pmm;
 
     // Retain the GPU before unlocking the VA space so that it sticks around.
@@ -3791,6 +3802,15 @@ NV_STATUS uvm_test_pma_alloc_free(UVM_TEST_PMA_ALLOC_FREE_PARAMS *params, struct
     if (!gpu)
         return NV_ERR_INVALID_DEVICE;
 
+    // WBX: Refuse test on a broken GPU.
+    if (uvm_gpu_is_broken(gpu)) {
+        UVM_ERR_PRINT("Refusing PMA alloc/free test on broken GPU %s (error: %s)\n",
+                      uvm_gpu_name(gpu),
+                      nvstatusToString(uvm_gpu_get_broken_status(gpu)));
+        uvm_gpu_release(gpu);
+        return NV_ERR_INVALID_DEVICE;
+    }
+
     pmm = &gpu->pmm;
 
     options.flags = UVM_PMA_ALLOCATE_PINNED;
@@ -3857,6 +3877,15 @@ NV_STATUS uvm_test_pmm_alloc_free_root(UVM_TEST_PMM_ALLOC_FREE_ROOT_PARAMS *para
     if (!gpu)
         return NV_ERR_INVALID_DEVICE;
 
+    // WBX: Refuse test on a broken GPU.
+    if (uvm_gpu_is_broken(gpu)) {
+        UVM_ERR_PRINT("Refusing PMM alloc/free root test on broken GPU %s (error: %s)\n",
+                      uvm_gpu_name(gpu),
+                      nvstatusToString(uvm_gpu_get_broken_status(gpu)));
+        uvm_gpu_release(gpu);
+        return NV_ERR_INVALID_DEVICE;
+    }
+
     pmm = &gpu->pmm;
 
     status = uvm_pmm_gpu_alloc_user(pmm,
@@ -3890,6 +3919,15 @@ NV_STATUS uvm_test_pmm_inject_pma_evict_error(UVM_TEST_PMM_INJECT_PMA_EVICT_ERRO
     if (!gpu)
         return NV_ERR_INVALID_DEVICE;
 
+    // WBX: Refuse test on a broken GPU.
+    if (uvm_gpu_is_broken(gpu)) {
+        UVM_ERR_PRINT("Refusing inject PMA evict error test on broken GPU %s (error: %s)\n",
+                      uvm_gpu_name(gpu),
+                      nvstatusToString(uvm_gpu_get_broken_status(gpu)));
+        uvm_gpu_release(gpu);
+        return NV_ERR_INVALID_DEVICE;
+    }
+
     pmm = &gpu->pmm;
 
     uvm_mutex_lock(&pmm->lock);
@@ -3910,6 +3948,15 @@ NV_STATUS uvm_test_pmm_release_free_root_chunks(UVM_TEST_PMM_RELEASE_FREE_ROOT_C
     if (!gpu)
         return NV_ERR_INVALID_DEVICE;
 
+    // WBX: Refuse test on a broken GPU.
+    if (uvm_gpu_is_broken(gpu)) {
+        UVM_ERR_PRINT("Refusing release free root chunks test on broken GPU %s (error: %s)\n",
+                      uvm_gpu_name(gpu),
+                      nvstatusToString(uvm_gpu_get_broken_status(gpu)));
+        uvm_gpu_release(gpu);
+        return NV_ERR_INVALID_DEVICE;
+    }
+
     release_free_root_chunks(&gpu->pmm);
 
     uvm_gpu_release(gpu);
@@ -3924,6 +3971,15 @@ NV_STATUS uvm_test_pma_get_batch_size(UVM_TEST_PMA_GET_BATCH_SIZE_PARAMS *params
     gpu = uvm_va_space_retain_gpu_by_uuid(va_space, &params->gpu_uuid);
     if (!gpu)
         return NV_ERR_INVALID_DEVICE;
+
+    // WBX: Refuse test on a broken GPU.
+    if (uvm_gpu_is_broken(gpu)) {
+        UVM_ERR_PRINT("Refusing PMA get batch size test on broken GPU %s (error: %s)\n",
+                      uvm_gpu_name(gpu),
+                      nvstatusToString(uvm_gpu_get_broken_status(gpu)));
+        uvm_gpu_release(gpu);
+        return NV_ERR_INVALID_DEVICE;
+    }
 
     if (gpu->parent->rm_info.isSimulated)
         params->pma_batch_size = UVM_CHUNK_SIZE_MAX;
@@ -3974,6 +4030,15 @@ NV_STATUS uvm_test_pmm_get_alloc_list(UVM_TEST_PMM_GET_ALLOC_LIST_PARAMS *params
 
     gpu = uvm_va_space_get_gpu_by_uuid(va_space, &params->gpu_uuid);
     if (!gpu) {
+        status = NV_ERR_INVALID_DEVICE;
+        goto out;
+    }
+
+    // WBX: Refuse test on a broken GPU.
+    if (uvm_gpu_is_broken(gpu)) {
+        UVM_ERR_PRINT("Refusing PMM get alloc list test on broken GPU %s (error: %s)\n",
+                      uvm_gpu_name(gpu),
+                      nvstatusToString(uvm_gpu_get_broken_status(gpu)));
         status = NV_ERR_INVALID_DEVICE;
         goto out;
     }

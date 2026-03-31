@@ -4017,6 +4017,15 @@ NV_STATUS uvm_api_pageable_mem_access_on_gpu(UVM_PAGEABLE_MEM_ACCESS_ON_GPU_PARA
         return NV_ERR_INVALID_DEVICE;
     }
 
+    // WBX: Refuse to operate on a broken GPU.
+    if (uvm_gpu_is_broken(gpu)) {
+        UVM_ERR_PRINT("Refusing pageable mem access on broken GPU %s (error: %s)\n",
+                      uvm_gpu_name(gpu),
+                      nvstatusToString(uvm_gpu_get_broken_status(gpu)));
+        uvm_va_space_up_read(va_space);
+        return NV_ERR_INVALID_DEVICE;
+    }
+
     if (uvm_va_space_pageable_mem_access_enabled(va_space) && gpu->parent->replayable_faults_supported)
         params->pageableMemAccess = NV_TRUE;
     else
@@ -4039,6 +4048,15 @@ NV_STATUS uvm_test_set_prefetch_filtering(UVM_TEST_SET_PREFETCH_FILTERING_PARAMS
     gpu = uvm_va_space_get_gpu_by_uuid(va_space, &params->gpu_uuid);
 
     if (!gpu) {
+        status = NV_ERR_INVALID_DEVICE;
+        goto done;
+    }
+
+    // WBX: Refuse test on a broken GPU.
+    if (uvm_gpu_is_broken(gpu)) {
+        UVM_ERR_PRINT("Refusing prefetch filtering test on broken GPU %s (error: %s)\n",
+                      uvm_gpu_name(gpu),
+                      nvstatusToString(uvm_gpu_get_broken_status(gpu)));
         status = NV_ERR_INVALID_DEVICE;
         goto done;
     }
@@ -4077,10 +4095,21 @@ NV_STATUS uvm_test_get_gpu_time(UVM_TEST_GET_GPU_TIME_PARAMS *params, struct fil
 
     gpu = uvm_va_space_get_gpu_by_uuid(va_space, &params->gpu_uuid);
 
-    if (gpu)
-        params->timestamp_ns = gpu->parent->host_hal->get_time(gpu);
-    else
+    if (gpu) {
+        // WBX: Refuse to read GPU time from a broken GPU.
+        if (uvm_gpu_is_broken(gpu)) {
+            UVM_ERR_PRINT("Refusing to read GPU time from broken GPU %s (error: %s)\n",
+                          uvm_gpu_name(gpu),
+                          nvstatusToString(uvm_gpu_get_broken_status(gpu)));
+            status = NV_ERR_INVALID_DEVICE;
+        }
+        else {
+            params->timestamp_ns = gpu->parent->host_hal->get_time(gpu);
+        }
+    }
+    else {
         status = NV_ERR_INVALID_DEVICE;
+    }
 
     uvm_va_space_up_read(va_space);
 
@@ -4096,6 +4125,15 @@ NV_STATUS uvm_test_dump_access_bits(UVM_TEST_DUMP_ACCESS_BITS_PARAMS *params, st
 
     gpu = uvm_va_space_retain_gpu_by_uuid(va_space, &params->gpu_uuid);
     if (!gpu || !gpu->parent->access_bits_supported) {
+        status = NV_ERR_INVALID_DEVICE;
+        goto done;
+    }
+
+    // WBX: Refuse to dump access bits on a broken GPU.
+    if (uvm_gpu_is_broken(gpu)) {
+        UVM_ERR_PRINT("Refusing to dump access bits on broken GPU %s (error: %s)\n",
+                      uvm_gpu_name(gpu),
+                      nvstatusToString(uvm_gpu_get_broken_status(gpu)));
         status = NV_ERR_INVALID_DEVICE;
         goto done;
     }

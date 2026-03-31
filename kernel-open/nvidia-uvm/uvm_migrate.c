@@ -952,6 +952,15 @@ NV_STATUS uvm_api_migrate(UVM_MIGRATE_PARAMS *params, struct file *filp)
             goto done;
         }
 
+        // WBX: Refuse to migrate to a broken GPU.
+        if (uvm_gpu_is_broken(dest_gpu)) {
+            UVM_ERR_PRINT("Refusing to migrate to broken GPU %s (error: %s)\n",
+                          uvm_gpu_name(dest_gpu),
+                          nvstatusToString(uvm_gpu_get_broken_status(dest_gpu)));
+            status = NV_ERR_INVALID_DEVICE;
+            goto done;
+        }
+
         if (params->length > 0 && !uvm_gpu_can_address(dest_gpu, params->base, params->length)) {
             status = NV_ERR_OUT_OF_RANGE;
             goto done;
@@ -1130,6 +1139,15 @@ NV_STATUS uvm_api_migrate_range_group(UVM_MIGRATE_RANGE_GROUP_PARAMS *params, st
     else {
         gpu = uvm_va_space_get_gpu_by_uuid_with_gpu_va_space(va_space, &params->destinationUuid);
         if (!gpu) {
+            status = NV_ERR_INVALID_DEVICE;
+            goto done;
+        }
+
+        // WBX: Refuse to migrate to a broken GPU.
+        if (uvm_gpu_is_broken(gpu)) {
+            UVM_ERR_PRINT("Refusing to migrate range group to broken GPU %s (error: %s)\n",
+                          uvm_gpu_name(gpu),
+                          nvstatusToString(uvm_gpu_get_broken_status(gpu)));
             status = NV_ERR_INVALID_DEVICE;
             goto done;
         }

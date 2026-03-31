@@ -2030,6 +2030,15 @@ static NV_STATUS uvm_map_sked_reflected_range(uvm_va_space_t *va_space, UVM_MAP_
         goto done;
     }
 
+    // WBX: Refuse to map sked reflected range on a broken GPU.
+    if (uvm_gpu_is_broken(gpu)) {
+        UVM_ERR_PRINT("Refusing to map sked reflected range on broken GPU %s (error: %s)\n",
+                      uvm_gpu_name(gpu),
+                      nvstatusToString(uvm_gpu_get_broken_status(gpu)));
+        status = NV_ERR_INVALID_DEVICE;
+        goto done;
+    }
+
     // Check if the GPU can access the VA
     if (!uvm_gpu_can_address(gpu, params->base, params->length)) {
         status = NV_ERR_OUT_OF_RANGE;

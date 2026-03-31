@@ -1969,6 +1969,15 @@ NV_STATUS uvm_test_access_counters_enabled_by_default(UVM_TEST_ACCESS_COUNTERS_E
     if (!gpu)
         return NV_ERR_INVALID_DEVICE;
 
+    // WBX: Refuse test on a broken GPU.
+    if (uvm_gpu_is_broken(gpu)) {
+        UVM_ERR_PRINT("Refusing access counters test on broken GPU %s (error: %s)\n",
+                      uvm_gpu_name(gpu),
+                      nvstatusToString(uvm_gpu_get_broken_status(gpu)));
+        uvm_gpu_release(gpu);
+        return NV_ERR_INVALID_DEVICE;
+    }
+
     params->enabled = uvm_parent_gpu_access_counters_required(gpu->parent);
 
     uvm_gpu_release(gpu);
@@ -2089,6 +2098,15 @@ NV_STATUS uvm_test_reconfigure_access_counters(UVM_TEST_RECONFIGURE_ACCESS_COUNT
     if (!gpu)
         return NV_ERR_INVALID_DEVICE;
 
+    // WBX: Refuse test on a broken GPU.
+    if (uvm_gpu_is_broken(gpu)) {
+        UVM_ERR_PRINT("Refusing reconfigure access counters test on broken GPU %s (error: %s)\n",
+                      uvm_gpu_name(gpu),
+                      nvstatusToString(uvm_gpu_get_broken_status(gpu)));
+        status = NV_ERR_INVALID_DEVICE;
+        goto exit_release_gpu;
+    }
+
     if (!gpu->parent->access_counters_supported) {
         status = NV_ERR_NOT_SUPPORTED;
         goto exit_release_gpu;
@@ -2141,6 +2159,15 @@ NV_STATUS uvm_test_reset_access_counters(UVM_TEST_RESET_ACCESS_COUNTERS_PARAMS *
     gpu = uvm_va_space_retain_gpu_by_uuid(va_space, &params->gpu_uuid);
     if (!gpu)
         return NV_ERR_INVALID_DEVICE;
+
+    // WBX: Refuse test on a broken GPU.
+    if (uvm_gpu_is_broken(gpu)) {
+        UVM_ERR_PRINT("Refusing reset access counters test on broken GPU %s (error: %s)\n",
+                      uvm_gpu_name(gpu),
+                      nvstatusToString(uvm_gpu_get_broken_status(gpu)));
+        status = NV_ERR_INVALID_DEVICE;
+        goto exit_release_gpu;
+    }
 
     if (!gpu->parent->access_counters_supported) {
         status = NV_ERR_NOT_SUPPORTED;
@@ -2253,6 +2280,15 @@ NV_STATUS uvm_test_set_ignore_access_counters(UVM_TEST_SET_IGNORE_ACCESS_COUNTER
     if (!gpu)
         return NV_ERR_INVALID_DEVICE;
 
+    // WBX: Refuse test on a broken GPU.
+    if (uvm_gpu_is_broken(gpu)) {
+        UVM_ERR_PRINT("Refusing set ignore access counters test on broken GPU %s (error: %s)\n",
+                      uvm_gpu_name(gpu),
+                      nvstatusToString(uvm_gpu_get_broken_status(gpu)));
+        uvm_gpu_release(gpu);
+        return NV_ERR_INVALID_DEVICE;
+    }
+
     if (gpu->parent->access_counters_supported)
         uvm_parent_gpu_access_counters_set_ignore(gpu->parent, params->ignore);
     else
@@ -2273,6 +2309,15 @@ NV_STATUS uvm_test_query_access_counters(UVM_TEST_QUERY_ACCESS_COUNTERS_PARAMS *
     gpu = uvm_va_space_retain_gpu_by_uuid(va_space, &params->gpu_uuid);
     if (!gpu)
         return NV_ERR_INVALID_DEVICE;
+
+    // WBX: Refuse test on a broken GPU.
+    if (uvm_gpu_is_broken(gpu)) {
+        UVM_ERR_PRINT("Refusing query access counters test on broken GPU %s (error: %s)\n",
+                      uvm_gpu_name(gpu),
+                      nvstatusToString(uvm_gpu_get_broken_status(gpu)));
+        status = NV_ERR_INVALID_DEVICE;
+        goto exit_release_gpu;
+    }
 
     if (!gpu->parent->access_counters_supported) {
         status = NV_ERR_NOT_SUPPORTED;

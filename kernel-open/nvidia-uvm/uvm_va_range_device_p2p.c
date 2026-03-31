@@ -537,6 +537,15 @@ NV_STATUS uvm_api_alloc_device_p2p(UVM_ALLOC_DEVICE_P2P_PARAMS *params, struct f
     if (!gpu)
         return NV_ERR_INVALID_DEVICE;
 
+    // WBX: Refuse to allocate P2P on a broken GPU.
+    if (uvm_gpu_is_broken(gpu)) {
+        UVM_ERR_PRINT("Refusing to allocate device P2P on broken GPU %s (error: %s)\n",
+                      uvm_gpu_name(gpu),
+                      nvstatusToString(uvm_gpu_get_broken_status(gpu)));
+        status = NV_ERR_INVALID_DEVICE;
+        goto out_release;
+    }
+
     if (!gpu->parent->device_p2p_initialised) {
         status = NV_ERR_NOT_SUPPORTED;
         goto out_release;

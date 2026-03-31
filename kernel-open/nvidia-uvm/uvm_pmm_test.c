@@ -830,6 +830,15 @@ NV_STATUS uvm_test_pmm_query(UVM_TEST_PMM_QUERY_PARAMS *params, struct file *fil
     if (!gpu)
         return NV_ERR_INVALID_DEVICE;
 
+    // WBX: Refuse test on a broken GPU.
+    if (uvm_gpu_is_broken(gpu)) {
+        UVM_ERR_PRINT("Refusing PMM query test on broken GPU %s (error: %s)\n",
+                      uvm_gpu_name(gpu),
+                      nvstatusToString(uvm_gpu_get_broken_status(gpu)));
+        uvm_gpu_release(gpu);
+        return NV_ERR_INVALID_DEVICE;
+    }
+
     switch (params->key) {
         case UVM_TEST_CHUNK_SIZE_GET_USER_SIZE:
             params->value = gpu->pmm.chunk_sizes[UVM_PMM_GPU_MEMORY_TYPE_USER];
@@ -884,6 +893,15 @@ NV_STATUS uvm_test_pmm_check_leak(UVM_TEST_PMM_CHECK_LEAK_PARAMS *params, struct
     gpu = uvm_va_space_retain_gpu_by_uuid(va_space, &params->gpu_uuid);
     if (!gpu)
         return NV_ERR_INVALID_DEVICE;
+
+    // WBX: Refuse test on a broken GPU.
+    if (uvm_gpu_is_broken(gpu)) {
+        UVM_ERR_PRINT("Refusing PMM check leak test on broken GPU %s (error: %s)\n",
+                      uvm_gpu_name(gpu),
+                      nvstatusToString(uvm_gpu_get_broken_status(gpu)));
+        uvm_gpu_release(gpu);
+        return NV_ERR_INVALID_DEVICE;
+    }
 
     status = check_leak(gpu, params->chunk_size, params->alloc_limit, &params->allocated);
 
