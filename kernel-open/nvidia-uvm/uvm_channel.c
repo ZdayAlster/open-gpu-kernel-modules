@@ -2121,20 +2121,36 @@ NV_STATUS uvm_channel_check_errors(uvm_channel_t *channel)
         }
     }
     
-    //del old set by WBX,no matter NV_ERR_ECC_ERROR or NV_ERR_RC_ERROR, all set global fatal error
-    //uvm_global_set_fatal_error(status);
     //WBX added  start---
-    { 
-	uvm_gpu_t *gpu = uvm_channel_get_gpu(channel); 
-	// Check if this is an AER-induced fault (RC_ERROR from channel, 
-	// not ECC). For AER faults, only mark the affected GPU broken, 
-	// leaving other GPUs operational. 
-	if (status == NV_ERR_RC_ERROR && !gpu->ecc.enabled) { 
-	        // Per-GPU isolation: AER channel error → only this GPU broken 
-            uvm_gpu_set_broken(gpu, status); 
+    {
+        uvm_gpu_t *gpu = uvm_channel_get_gpu(channel);
+        // AER fault isolation: if this GPU was already marked broken by
+        // the AER error_detected callback (uvm_gpu_broken_aer_entry),
+        // skip the global fatal_error to preserve healthy GPUs.
+        //
+        // Background: uvm_gpu_broken_aer_entry() runs synchronously in
+        // error_detected() and sets gpu->broken *before* the GSP RC
+        // notification arrives (typically tens to hundreds of ms later).
+        // So by the time we reach here, an AER-induced channel error will
+        // always find uvm_gpu_is_broken(gpu) == true, regardless of
+        // whether ECC is enabled (e.g. L20 has ECC enabled but can still
+        // receive AER faults).
+        //
+        // Old condition "!gpu->ecc.enabled" was wrong: it caused L20/A100
+        // (ECC-enabled cards) to fall through to the global fatal path
+        // even when the fault was AER-induced, breaking all healthy GPUs.
+        if (uvm_gpu_is_broken(gpu)) {
+            // GPU already marked broken by AER path; channel error is a
+            // consequence of that fault. Per-GPU isolation is already in
+            // effect — do NOT escalate to global fatal_error.
+            UVM_ERR_PRINT("GPU %s channel error after AER isolation, skipping global fatal\n",
+                          uvm_gpu_name(gpu));
+        } else if (status == NV_ERR_ECC_ERROR) {
+            // True ECC uncorrectable error (not AER-induced) → global fatal
+            uvm_global_set_fatal_error(status);
         } else {
-            // ECC and other unrecoverable errors → global fatal (original behavior) 
-            uvm_global_set_fatal_error(status); 
+            // Other unrecoverable errors → global fatal (original behavior)
+            uvm_global_set_fatal_error(status);
         }
     }
     //WBX added end---
