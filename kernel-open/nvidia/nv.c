@@ -1670,7 +1670,7 @@ static int nv_open_device(nv_state_t *nv, nvidia_stack_t *sp)
 
         rc = nv_start_device(nv, sp);
         if (rc != 0){
-	    //wbx新增 如果 rm_init_adapter 失败，标记设备为 excluded
+	        //wbx新增 如果 rm_init_adapter 失败，标记设备为 excluded
             //避免后续其他进程重复尝试初始化失败设备
             if (rc == -EIO)
             {
@@ -1679,7 +1679,7 @@ static int nv_open_device(nv_state_t *nv, nvidia_stack_t *sp)
                           "Excluding GPU due to initialization failure\n");
             }
             return rc;
-	}
+	    }
     }
     else if (rm_is_device_sequestered(sp, nv))
     {

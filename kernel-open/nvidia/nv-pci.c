@@ -2254,14 +2254,54 @@ nv_pci_remove(struct pci_dev *pci_dev)
     nvidia_vgpu_vfio_remove(pci_dev, NV_TRUE);
 #endif
 
-    if ((nv->flags & NV_FLAG_PERSISTENT_SW_STATE) || (nv->flags & NV_FLAG_OPEN))
+    /*
+     * WBX: GPU-lost fast path — same 5 conditions as nv_stop_device().
+     *
+     * After an AER error_detected() exclusion, if nvidia-persistenced
+     * is running, nv_stop_device() skips RM teardown via GPU-lost path
+     * (nv->flags & NV_FLAG_EXCLUDE). However, nv_stop_device() only runs
+     * when usage_count goes 0→1→0. If persistenced opens the GPU and
+     * then nv_pci_remove() is triggered (e.g., sysfs remove), we reach
+     * here with usage_count=1 still. nv_stop_device() was already called
+     * and skipped RM teardown. But we are called again here via both
+     * rm_disable_gpu_state_persistence() (which internally calls
+     * nv_stop_device → nv_shutdown_adapter → rm_disable_adapter) and
+     * the direct nv_shutdown_adapter() call below.
+     *
+     * The problem: nv->removed was set to NV_TRUE at line 2246 BEFORE
+     * this block. So the old check `if (!nv->removed)` inside
+     * rm_disable_adapter() passes, and we attempt gpuStateUnload() —
+     * a GSP RPC on a lost GPU that fails immediately with
+     * NV_ERR_GPU_IS_LOST, potentially corrupting GPU RM internal state
+     * and causing "Unknown Error" on subsequent nvidia-smi queries
+     * even after PCI rescan/reprobe.
+     *
+     * Solution: replicate the full GPU-lost check as the OUTERMOST
+     * condition so that BOTH rm_disable_gpu_state_persistence AND
+     * the direct nv_shutdown_adapter call are skipped together.
+     */
+    if (nv->removed || NV_IS_DEVICE_IN_SURPRISE_REMOVAL(nv) ||
+        (nv->flags & NV_FLAG_EXCLUDE) ||
+        (dev_is_pci(nvl->dev) && nvl->pci_dev->error_state != pci_channel_io_normal) ||
+        (dev_is_pci(nvl->dev) && !pci_device_is_present(nvl->pci_dev)))
+    {
+        NV_DEV_PRINTF(NV_DBG_WARNINGS, nv,
+            "GPU lost/excluded in nv_pci_remove, skipping RM teardown to avoid GSP RPC timeout\n");
+        nv_acpi_unregister_notifier(nvl);
+    }
+    else if ((nv->flags & NV_FLAG_PERSISTENT_SW_STATE) || (nv->flags & NV_FLAG_OPEN))
     {
         nv_acpi_unregister_notifier(nvl);
         if (nv->flags & NV_FLAG_PERSISTENT_SW_STATE)
         {
             rm_disable_gpu_state_persistence(sp, nv);
         }
-        nv_shutdown_adapter(sp, nv, nvl);
+
+        if (nv->flags & NV_FLAG_OPEN)
+        {
+            nv_shutdown_adapter(sp, nv, nvl);
+        }
+
         nv_dev_free_stacks(nvl);
     }
 
