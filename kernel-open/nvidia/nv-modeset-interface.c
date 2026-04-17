@@ -80,10 +80,39 @@ void nvidia_modeset_remove(NvU32 gpuId)
 }
 
 /*
- * nvidia_modeset_remove_excluded - AER-safe device removal.
+ * nvidia_modeset_excluded - AER-safe device removal.
  *
- * Invokes the remove_excluded callback if registered; falls back to the
+ * Invokes the excluded callback if registered; falls back to the
  * regular remove callback otherwise.  Must not be called with the RM lock held.
+ */
+void nvidia_modeset_excluded(NvU32 gpuId)
+{
+    if (nv_modeset_callbacks)
+    {
+        if (nv_modeset_callbacks->excluded)
+        {
+            nv_modeset_callbacks->excluded(gpuId);
+        }
+        else if (nv_modeset_callbacks->remove)
+        {
+            nv_modeset_callbacks->remove(gpuId);
+        }
+    }
+}
+
+/*
+ * nvidia_modeset_remove_excluded - Clear the excluded state for a GPU device.
+ *
+ * @gpuId: The ID of the GPU to restore.
+ *
+ * Description:
+ * This function is the inverse of nvidia_modeset_excluded(). It invokes the
+ * 'remove_excluded' callback if registered, signaling that the GPU has recovered
+ * from an error state (e.g., PCIe AER) and is available for normal display
+ * operations again.
+ *
+ * Unlike nvidia_modeset_excluded(), this function does not fall back to the
+ * standard 'remove' callback, as the device is being restored rather than removed.
  */
 void nvidia_modeset_remove_excluded(NvU32 gpuId)
 {
@@ -92,10 +121,6 @@ void nvidia_modeset_remove_excluded(NvU32 gpuId)
         if (nv_modeset_callbacks->remove_excluded)
         {
             nv_modeset_callbacks->remove_excluded(gpuId);
-        }
-        else if (nv_modeset_callbacks->remove)
-        {
-            nv_modeset_callbacks->remove(gpuId);
         }
     }
 }

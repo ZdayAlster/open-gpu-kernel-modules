@@ -892,7 +892,7 @@ typedef NV_STATUS (*uvmEventResumeP2P_t) (const NvProcessorUuid *pGpuUuidStruct)
     Arguments:
         pGpuUuidStruct[IN] - UUID of the GPU that experienced the AER fatal error.
 */
-typedef void (*uvmEventGpuBrokenAer_t) (const NvProcessorUuid *pGpuUuidStruct);
+typedef void (*uvmEventGpuBrokenAer_t) (const NvProcessorUuid *pGpuUuidStruct, NV_STATUS error);
 
 struct UvmEventsLinux
 {

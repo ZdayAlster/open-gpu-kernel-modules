@@ -178,7 +178,7 @@ NV_STATUS uvm_resumeP2P_entry(const NvProcessorUuid *uuid);
 
 // Mark the GPU as broken due to AER fatal error.
 // Safe to call from atomic/interrupt context (uses spinlock, not mutex).
-void uvm_gpu_broken_aer_entry(const NvProcessorUuid *uuid);
+void uvm_gpu_broken_aer_entry(const NvProcessorUuid *uuid, NV_STATUS error);
 
 // Add parent GPU to the global table.
 //

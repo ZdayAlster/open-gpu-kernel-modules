@@ -79,6 +79,7 @@ void          nvidia_modeset_suspend           (NvU32 gpuId);
 void          nvidia_modeset_resume            (NvU32 gpuId);
 void          nvidia_modeset_remove            (NvU32 gpuId);
 void          nvidia_modeset_remove_excluded   (NvU32 gpuId);
+void          nvidia_modeset_excluded          (NvU32 gpuId);
 void          nvidia_modeset_probe             (const nv_linux_state_t *nvl);
 NvBool        nv_is_uuid_in_gpu_exclusion_list (const char *);
 

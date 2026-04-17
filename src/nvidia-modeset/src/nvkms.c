@@ -6837,17 +6837,27 @@ void nvKmsResume(NvU32 gpuId)
 }
 
 /*
- * nvEvoSetDeviceExcluded - Mark a device as excluded due to AER fatal.
+ * nvEvoSetDeviceExcluded - Set or clear the exclusion state for a GPU device.
  *
- * Iterates the global device list and sets the excluded flag on the matching
- * NVDevEvoRec.  This causes all subsequent DMA push operations
- * (nvEvoMakeRoom, nvEvoPollForEmptyChannel, nvDmaKickoffEvo) to bail out
- * immediately instead of spinning on frozen GPU registers.
+ * @gpuId:      The ID of the GPU to update.
+ * @is_excluded: NV_TRUE to mark the device as excluded (e.g., due to a fatal
+ *               PCIe AER error); NV_FALSE to clear the exclusion and resume
+ *               normal operations.
  *
- * Called from the PCIe AER error_detected path before invoking the DRM
- * removeExcluded callback.
+ * Description:
+ * Iterates the global device list and sets the 'excluded' flag on the matching
+ * NVDevEvoRec.
+ *
+ * - When excluded (is_excluded == NV_TRUE): All subsequent DMA push operations
+ *   (nvEvoMakeRoom, nvEvoPollForEmptyChannel, nvDmaKickoffEvo) will bail out
+ *   immediately instead of spinning on frozen GPU registers. This is typically
+ *   called from the PCIe AER error_detected path.
+ *
+ * - When cleared (is_excluded == NV_FALSE): Normal DMA push operations are
+ *   resumed. This is typically called during error recovery or when the device
+ *   is re-enabled.
  */
-void nvEvoSetDeviceExcluded(NvU32 gpuId)
+void nvEvoSetDeviceExcluded(NvU32 gpuId, NvBool is_excluded)
 {
     NVDevEvoPtr pDevEvo;
     NvU32 i;
@@ -6855,12 +6865,16 @@ void nvEvoSetDeviceExcluded(NvU32 gpuId)
     FOR_ALL_EVO_DEVS(pDevEvo) {
         for (i = 0; i < ARRAY_LEN(pDevEvo->openedGpuIds); i++) {
             if (pDevEvo->openedGpuIds[i] == gpuId) {
-                if (!pDevEvo->excluded) {
-                    nvEvoLogDev(pDevEvo, EVO_LOG_ERROR,
-                        "GPU excluded due to fatal PCIe AER; "
-                        "all DMA push operations will be no-ops");
-                    pDevEvo->excluded = NV_TRUE;
-                }
+                if (is_excluded) {
+			nvEvoLogDev(pDevEvo, EVO_LOG_ERROR,
+					"GPU excluded due to fatal PCIe AER; "
+					"all DMA push operations will be no-ops");
+                } else {
+			nvEvoLogDev(pDevEvo, EVO_LOG_INFO,
+				       	"GPU exclusion cleared; "
+					"DMA push operations resumed");
+		}
+		pDevEvo->excluded = is_excluded;
                 return;
             }
         }

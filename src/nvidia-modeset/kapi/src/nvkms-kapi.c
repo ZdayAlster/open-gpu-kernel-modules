@@ -3931,12 +3931,12 @@ void nvKmsKapiRemove
 }
 
 /*
- * nvKmsKapiRemoveExcluded - AER-safe variant of nvKmsKapiRemove().
+ * nvKmsKapiExcluded - AER-safe variant of nvKmsKapiRemove().
  *
  * Invokes the removeExcluded callback if registered; falls back to the
  * regular remove callback otherwise (for callers that pre-date this API).
  */
-void nvKmsKapiRemoveExcluded
+void nvKmsKapiExcluded
 (
     NvU32 gpuId
 )
@@ -3947,11 +3947,11 @@ void nvKmsKapiRemoveExcluded
      * threads (timers, flips, etc.) will bail out of DMA push operations
      * immediately instead of spinning on frozen GPU registers.
      */
-    nvEvoSetDeviceExcluded(gpuId);
+    nvEvoSetDeviceExcluded(gpuId, NV_TRUE);
 
     if (pCallbacks) {
-        if (pCallbacks->removeExcluded) {
-            pCallbacks->removeExcluded(gpuId);
+        if (pCallbacks->excluded) {
+            pCallbacks->excluded(gpuId);
         } else {
             /* Fallback: nvidia-drm is an older version without removeExcluded.
              * Call remove() — note this may hang if the GPU is truly frozen,
@@ -3961,7 +3961,48 @@ void nvKmsKapiRemoveExcluded
     }
 }
 
-
+/*
+ * nvKmsKapiRemoveExcluded - Clear the excluded state for a GPU device.
+ *
+ * @gpuId: The ID of the GPU to restore.
+ *
+ * Description:
+ * This function is the inverse of nvKmsKapiExcluded(). It clears the
+ * "excluded" flag for the specified GPU, allowing NVKMS to resume normal
+ * operations such as mode setting and page flipping on this device.
+ *
+ * When a GPU is marked as excluded (typically due to an AER error or
+ * hot-unplug event), NVKMS blocks new DMA pushes to prevent accessing
+ * frozen or unavailable hardware registers. Calling this function
+ * re-enables command submission to the GPU.
+ *
+ * Note:
+ * Currently, this implementation only clears the internal exclusion flag
+ * via nvEvoSetDeviceExcluded(). The callback notification to the DRM
+ * layer (e.g., nvidia-drm) is currently disabled (#if 0), likely to
+ * avoid complex synchronization issues during recovery or because
+ * explicit notification is not required in the current architecture.
+ */
+void nvKmsKapiRemoveExcluded
+(
+    NvU32 gpuId
+)
+{
+     /* Clear the exclusion flag to allow NVKMS to submit commands to this GPU again */
+    nvEvoSetDeviceExcluded(gpuId, NV_FALSE);
+#if 0
+     /* 
+     * Disabled code: If notification to the upper-layer driver (e.g., nvidia-drm)
+     * is needed in the future to indicate that the GPU is available again,
+     * the callback logic can be restored here.
+     */
+    if (pCallbacks) {
+        if (pCallbacks->removeExcluded) {
+            pCallbacks->removeExcluded(gpuId);
+        }
+    }
+#endif
+}
 
 void nvKmsKapiProbe
 (

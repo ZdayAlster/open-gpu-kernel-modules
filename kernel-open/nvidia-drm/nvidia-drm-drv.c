@@ -2232,7 +2232,7 @@ void nv_drm_remove(NvU32 gpuId)
  * when the driver is unloaded or the device is fully removed via
  * nv_pci_remove().
  */
-void nv_drm_remove_excluded(NvU32 gpuId)
+void nv_drm_excluded(NvU32 gpuId)
 {
     struct nv_drm_device *nv_dev = nv_drm_find_and_remove_device(gpuId);
 
@@ -2245,7 +2245,10 @@ void nv_drm_remove_excluded(NvU32 gpuId)
     }
 }
 
-
+void nv_drm_remove_excluded(NvU32 gpuId)
+{
+    struct nv_drm_device *nv_dev = nv_drm_find_and_remove_device(gpuId);
+}
 
 /*
  * Unregister all NVIDIA DRM devices.

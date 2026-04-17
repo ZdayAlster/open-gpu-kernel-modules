@@ -33,6 +33,7 @@ int nv_drm_probe_devices(void);
 
 void nv_drm_remove(NvU32 gpuId);
 void nv_drm_remove_excluded(NvU32 gpuId);
+void nv_drm_excluded(NvU32 gpuId);
 void nv_drm_remove_devices(void);
 
 void nv_drm_suspend_resume(NvBool suspend);

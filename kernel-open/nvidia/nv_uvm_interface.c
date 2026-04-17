@@ -1757,7 +1757,7 @@ EXPORT_SYMBOL(nvUvmInterfaceCslLogEncryption);
  *
  * Must not be called with nv_linux_devices_lock held.
  */
-static void nvUvmInterfaceGpuBrokenAerByUuid(const NvU8 *uuid)
+static void nvUvmInterfaceGpuBrokenAerByUuid(const NvU8 *uuid, NV_STATUS error)
 {
     struct UvmEventsLinux *events;
 
@@ -1771,20 +1771,26 @@ static void nvUvmInterfaceGpuBrokenAerByUuid(const NvU8 *uuid)
      */
     events = getUvmEvents();
     if (events && events->gpuBrokenAer)
-        events->gpuBrokenAer((const NvProcessorUuid *)uuid);
+        events->gpuBrokenAer((const NvProcessorUuid *)uuid, error);
 }
 
 /*
- * WBX: AER error_detected safe version that doesn't need to traverse
- * the global device list. Called with nv (already obtained) when pci_dev
- * and nv are available.
+ * nvUvmInterfaceGpuBrokenAerByNv - Notify UVM of a fatal AER error using nv_state.
+ *
+ * @nv:    Pointer to the nv_state_t structure for the affected GPU.
+ * @error: NV_STATUS code describing the error (e.g., NV_ERR_GPU_IS_LOST).
+ *
+ * Description:
+ * This is an AER error_detected safe version that avoids traversing the global
+ * device list. It retrieves the cached UUID from the provided nv_state and
+ * notifies the UVM driver via the gpuBrokenAer callback.
  */
-void nvUvmInterfaceGpuBrokenAerByNv(nv_state_t *nv)
+void nvUvmInterfaceGpuBrokenAerByNv(nv_state_t *nv, NV_STATUS error)
 {
     const NvU8 *uuid;
 
     uuid = nv_get_cached_uuid(nv);
-    nvUvmInterfaceGpuBrokenAerByUuid(uuid);
+    nvUvmInterfaceGpuBrokenAerByUuid(uuid, error);
 }
 EXPORT_SYMBOL(nvUvmInterfaceGpuBrokenAerByNv);
 

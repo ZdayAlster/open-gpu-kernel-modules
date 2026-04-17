@@ -2688,7 +2688,7 @@ nv_pci_error_detected(struct pci_dev *pdev, pci_channel_state_t state)
         /*
          * Notify nvidia-modeset to release this GPU using the AER-safe path.
          *
-         * nvidia_modeset_remove_excluded() routes to nv_drm_remove_excluded()
+         * nvidia_modeset_excluded() routes to nv_drm_excluded()
          * which skips all GSP RPCs (declareEventInterest, freeDevice,
          * releaseOwnership, drm_atomic_helper_shutdown).  Only DRM-layer
          * resources are torn down:
@@ -2711,13 +2711,13 @@ nv_pci_error_detected(struct pci_dev *pdev, pci_channel_state_t state)
          * frozen GPU and eventually trigger a kernel panic on L20 (compute
          * cards that load nvidia-drm but have no display).
          */
-        nvidia_modeset_remove_excluded(nv->gpu_id);
+        nvidia_modeset_excluded(nv->gpu_id);
 
         /* 通知 UVM 层只标记这张 GPU broken，
          * 而不是设置全局 fatal_error。
          * 使用 nv_get_cached_uuid 而非 nvidia_get_uuid_by_pci_dev，
          * 避免获取 nv_linux_devices_lock（可能被 persistenced 等持有）。 */
-        nvUvmInterfaceGpuBrokenAerByNv(nv);
+        nvUvmInterfaceGpuBrokenAerByNv(nv, NV_ERR_RC_ERROR);
 
         nv_printf(NV_DBG_ERRORS,
                   "NVRM: GPU %04x:%02x:%02x.%x  PCI channel io frozen, marking as excluded, modeset removed\n",
@@ -2746,7 +2746,7 @@ nv_pci_error_detected(struct pci_dev *pdev, pci_channel_state_t state)
         /* 通知 UVM 层只标记这张 GPU broken，
          * 而不是设置全局 fatal_error。
          * 使用 nv_get_cached_uuid 避免嵌套锁。 */
-        nvUvmInterfaceGpuBrokenAerByNv(nv);
+        nvUvmInterfaceGpuBrokenAerByNv(nv, NV_ERR_RC_ERROR);
         UNLOCK_NV_LINUX_DEVICES();
 
         nv_printf(NV_DBG_ERRORS,
@@ -2829,6 +2829,9 @@ nv_pci_slot_reset(struct pci_dev *pdev)
     }
 
     pci_set_master(pdev);
+
+    nvidia_modeset_remove_excluded(nv->gpu_id);
+    nvUvmInterfaceGpuBrokenAerByNv(nv, NV_OK);
 
     /*
      * Clear the EXCLUDE flag so the GPU can be used again.

@@ -545,7 +545,7 @@ NV_STATUS uvm_resumeP2P_entry(const NvProcessorUuid *uuid)
  * Only the affected GPU is marked broken; other GPUs remain operational.
  * This does NOT set g_uvm_global.fatal_error.
  */
-void uvm_gpu_broken_aer_entry(const NvProcessorUuid *uuid)
+void uvm_gpu_broken_aer_entry(const NvProcessorUuid *uuid, NV_STATUS error)
 {
     uvm_parent_gpu_t *parent_gpu;
     NvU32 i;
@@ -558,7 +558,7 @@ void uvm_gpu_broken_aer_entry(const NvProcessorUuid *uuid)
             NvU32 j;
             for (j = 0; j < UVM_PARENT_ID_MAX_SUB_PROCESSORS; j++) {
                 if (parent_gpu->gpus[j])
-                    uvm_gpu_set_broken(parent_gpu->gpus[j], NV_ERR_RC_ERROR);
+                    uvm_gpu_set_broken(parent_gpu->gpus[j], error);
             }
             break;
         }

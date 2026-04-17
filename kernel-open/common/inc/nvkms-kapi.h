@@ -616,6 +616,7 @@ struct NvKmsKapiCallbacks {
      * when the GPU is not actually frozen at the time of the call).
      */
     void (*removeExcluded)(NvU32 gpuId);
+    void (*excluded)(NvU32 gpuId);
     void (*probe)(const struct NvKmsKapiGpuInfo *gpu_info);
 };
 

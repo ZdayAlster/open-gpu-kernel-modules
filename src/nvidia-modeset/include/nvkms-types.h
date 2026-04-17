@@ -1190,7 +1190,7 @@ typedef struct _NVEvoDevRec {
      *   nvEvoIsCoreNotifierComplete(), nvEvoWaitForCoreNotifier()
      *   nvEvoWaitForCRC32Notifier(), WaitForFreeSpace()
      *
-     * Set by nvKmsKapiRemoveExcluded() → DRM removeExcluded callback chain.
+     * Set by nvKmsKapiExcluded() → DRM removeExcluded callback chain.
      * Not cleared until the device is fully removed and re-probed.
      */
     NvBool excluded;

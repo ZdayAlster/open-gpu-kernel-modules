@@ -36,6 +36,7 @@ const struct NvKmsKapiFunctionsTable* const nvKms = &nvKmsFuncsTable;
 const struct NvKmsKapiCallbacks nv_drm_kapi_callbacks = {
     .suspendResume   = nv_drm_suspend_resume,
     .remove          = nv_drm_remove,
+    .excluded        = nv_drm_excluded,
     .removeExcluded  = nv_drm_remove_excluded,
     .probe           = nv_drm_register_drm_device,
 };

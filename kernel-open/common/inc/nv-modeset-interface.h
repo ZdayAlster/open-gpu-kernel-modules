@@ -63,7 +63,7 @@ typedef struct {
     void (*remove)(NvU32 gpu_id);
 
     /*
-     * remove_excluded - AER-safe variant of remove().
+     * excluded - AER-safe variant of remove().
      *
      * Called when the GPU has been marked excluded due to a fatal PCIe AER
      * error.  Implementations must not issue any GSP RPCs (declareEventInterest,
@@ -72,6 +72,8 @@ typedef struct {
      *
      * May be NULL; if so, nvidia_modeset_remove() is used as a fallback.
      */
+    void (*excluded)(NvU32 gpu_id);
+    /*Clear the excluded state for a GPU device.*/
     void (*remove_excluded)(NvU32 gpu_id);
 
     /* Probe callback, called when a device is being hotplugged. */
