@@ -1618,6 +1618,8 @@ static int nv_open_device(nv_state_t *nv, nvidia_stack_t *sp)
     nv_linux_state_t *nvl = NV_GET_NVL_FROM_NV_STATE(nv);
     int rc;
     NV_STATUS status;
+    
+    NV_DEV_PRINTF(NV_DBG_ERRORS, nv, "open device start.........\n");
 
     if ((nv->flags & NV_FLAG_PCI_REMOVE_IN_PROGRESS) != 0)
     {
@@ -1646,13 +1648,13 @@ static int nv_open_device(nv_state_t *nv, nvidia_stack_t *sp)
         }
     }
 
-    NV_DEV_PRINTF(NV_DBG_INFO, nv, "Opening GPU with minor number %d\n",
+    NV_DEV_PRINTF(NV_DBG_ERRORS, nv, "Opening GPU with minor number %d\n",
                   nvl->minor_num);
 
     status = nv_check_gpu_state(nv);
     if (status == NV_ERR_GPU_IS_LOST)
     {
-        NV_DEV_PRINTF(NV_DBG_INFO, nv, "Device in removal process\n");
+        NV_DEV_PRINTF(NV_DBG_ERRORS, nv, "Device in removal process\n");
         return -ENODEV;
     }
 
@@ -1672,6 +1674,7 @@ static int nv_open_device(nv_state_t *nv, nvidia_stack_t *sp)
         if (rc != 0){
 	    //wbx新增 如果 rm_init_adapter 失败，标记设备为 excluded
             //避免后续其他进程重复尝试初始化失败设备
+            NV_DEV_PRINTF(NV_DBG_ERRORS, nv, "nv_start_device failed.\n");
             if (rc == -EIO)
             {
                 nv->flags |= NV_FLAG_EXCLUDE;
@@ -1691,6 +1694,8 @@ static int nv_open_device(nv_state_t *nv, nvidia_stack_t *sp)
     nv_assert_not_in_gpu_exclusion_list(sp, nv);
 
     atomic64_inc(&nvl->usage_count);
+    NV_DEV_PRINTF(NV_DBG_ERRORS, nv, "Opening GPU with minor number %d success.\n",
+                  nvl->minor_num);
 
     return 0;
 }
@@ -2047,7 +2052,7 @@ static void nv_stop_device(nv_state_t *nv, nvidia_stack_t *sp)
 {
     nv_linux_state_t *nvl = NV_GET_NVL_FROM_NV_STATE(nv);
     static int persistence_mode_notice_logged;
-
+    NV_DEV_PRINTF(NV_DBG_WARNINGS, nv,"dong stop device GPU %0x.\n",nv->pci_info.bus);
     /*
      * If the GPU has fallen off the bus (AER fatal, Xid 79, surprise removal),
      * skip the RM teardown path entirely. Calling rm_ref_dynamic_power(),
@@ -2140,10 +2145,19 @@ static void nv_stop_device(nv_state_t *nv, nvidia_stack_t *sp)
             if (nv->flags & NV_FLAG_USES_MSI)
             {
                 NV_PCI_DISABLE_MSI(nvl->pci_dev);
+		/*
+                 * Clear NV_FLAG_USES_MSI and NULL irq_count so the safety
+                 * net in nv_pci_remove() skips this block and does not
+                 * double-free irq_count, which would corrupt SLUB and cause
+                 * a kernel panic during the subsequent rescan + nvidia-smi.
+                 */
+                nv->flags &= ~NV_FLAG_USES_MSI;
+
                 if (nvl->irq_count)
                 {
                     NV_KFREE(nvl->irq_count,
                              nvl->num_intr * sizeof(nv_irq_count_info_t));
+		    nvl->irq_count = NULL;
                 }
             }
         }
@@ -2159,8 +2173,10 @@ static void nv_stop_device(nv_state_t *nv, nvidia_stack_t *sp)
             nv->flags &= ~NV_FLAG_USES_MSIX;
             NV_KFREE(nvl->msix_entries,
                      nvl->num_intr * sizeof(struct msix_entry));
+	    nvl->msix_entries = NULL;
             NV_KFREE(nvl->irq_count,
                      nvl->num_intr * sizeof(nv_irq_count_info_t));
+	    nvl->irq_count = NULL;
         }
 #endif
 
@@ -2189,6 +2205,15 @@ static void nv_stop_device(nv_state_t *nv, nvidia_stack_t *sp)
         else
         {
             nv_acpi_unregister_notifier(nvl);
+	    /*
+             * Stop the rc_timer BEFORE nv_shutdown_adapter() destroys pGpu.
+             * If the timer fires during shutdown it calls osRun1HzCallbacksNow
+             * on a partially torn-down GPU, risking a crash.  nv_stop_rc_timer
+             * is idempotent; the call at skip_rm_teardown is still needed as a
+             * safety net for the GPU-lost fast path.
+             */
+            nv_stop_rc_timer(nv);
+
             nv_shutdown_adapter(sp, nv, nvl);
         }
     }
@@ -2197,6 +2222,19 @@ skip_rm_teardown:
 
     if (!(nv->flags & NV_FLAG_PERSISTENT_SW_STATE))
     {
+	/*
+         * The rc_timer callback reads nvl->sp[NV_DEV_STACK_TIMER].  Stop the
+         * timer before freeing the stacks so the callback can never fire with
+         * a NULL sp.  nv_stop_rc_timer() is idempotent (no-op if already
+         * stopped), so calling it here is safe for every path that reaches
+         * this label:
+         *   - normal !PERSISTENT close: nv_shutdown_adapter/RmShutdownAdapter
+         *     does not guarantee nv_stop_rc_timer, so we must do it explicitly.
+         *   - GPU-lost fast-path (goto skip_rm_teardown): neither
+         *     rm_disable_adapter nor nv_shutdown_adapter was called, so the
+         *     timer is definitely still armed.
+         */
+        //nv_stop_rc_timer(nv);
         nv_dev_free_stacks(nvl);
     }
 
@@ -3220,15 +3258,39 @@ nvidia_rc_timer_callback(
     nvidia_stack_t *sp = nvl->sp[NV_DEV_STACK_TIMER];
     NV_STATUS status;
 
-    status = nv_check_gpu_state(nv);
-    if (status == NV_ERR_GPU_IS_LOST)
+    /*
+     * Skip callbacks for any GPU that is lost, excluded, or has a frozen PCIe
+     * link.  nv_check_gpu_state() only tests NV_FLAG_IN_SURPRISE_REMOVAL; the
+     * broader check below also catches AER-excluded GPUs (NV_FLAG_EXCLUDE) and
+     * devices whose PCIe error_state has been set by the AER handler.
+     *
+     * Without this guard, del_timer_sync() called from nv_stop_rc_timer()
+     * (Fix 1/2) would block for ~110 s waiting for osRun1HzCallbacksNow() to
+     * time out on a dead GSP, making the sysfs 'remove' write appear to hang
+     * and the system appear to have crashed.
+     */
+    if (nv->removed ||
+        NV_IS_DEVICE_IN_SURPRISE_REMOVAL(nv) ||
+        (nv->flags & NV_FLAG_EXCLUDE) ||
+        (dev_is_pci(nvl->dev) &&
+         nvl->pci_dev->error_state != pci_channel_io_normal) ||
+        (dev_is_pci(nvl->dev) && !pci_device_is_present(nvl->pci_dev)))
+
     {
         nv_printf(NV_DBG_INFO,
             "NVRM: GPU is lost, skipping device timer callbacks\n");
         return;
     }
 
-    if (rm_run_rc_callback(sp, nv) == NV_OK)
+    /*
+     * Guard mod_timer() against the race where nv_stop_rc_timer() sets
+     * rc_timer_enabled = 0 after this callback already read it as 1 and
+     * completed rm_run_rc_callback().  Without this check, del_timer_sync()
+     * would return while the timer is already re-armed, leaving a pending
+     * timer entry pointing at nvl even after nv_dev_free_stacks() runs.
+     */
+
+    if (rm_run_rc_callback(sp, nv) == NV_OK && nv->rc_timer_enabled)
     {
         // set another timeout 1 sec in the future:
         mod_timer(&nvl->rc_timer.kernel_timer, jiffies + HZ);

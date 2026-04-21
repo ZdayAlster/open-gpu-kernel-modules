@@ -3178,11 +3178,16 @@ NV_STATUS NV_API_CALL rm_run_rc_callback(
         return NV_ERR_GENERIC;
     }
 
+    if(sp == NULL)
+    {
+   	NV_PRINTF(LEVEL_ERROR,"dong GPU %0x timer sp = NULL;\n",nv->pci_info.bus); 
+	return NV_ERR_GENERIC;
+    }
+	
     NV_ENTER_RM_RUNTIME(sp,fp);
-
     osRun1HzCallbacksNow(pGpu);
+    NV_EXIT_RM_RUNTIME(sp,fp); 
 
-    NV_EXIT_RM_RUNTIME(sp,fp);
 
     return NV_OK;
 }

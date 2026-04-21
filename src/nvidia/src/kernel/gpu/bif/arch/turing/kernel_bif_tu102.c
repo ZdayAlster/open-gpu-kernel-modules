@@ -273,7 +273,7 @@ kbifCacheVFInfo_TU102
     status = GPU_BUS_CFG_CYCLE_RD32(pGpu, NV_XVE_SRIOV_CAP_HDR13_VF_BAR2_HI, &saveHi);
     NV_ASSERT(status == NV_OK);
     pGpu->sriovState.firstVFBarAddress[2] = (((NvU64)saveHi) << 32) + (saveLo & 0xFFFFFFF0);
-
+    
     // Get if VF BARs are 64 bit addressable
     regVal = GPU_REG_RD32(pGpu, DEVICE_BASE(NV_PCFG) + NV_XVE_SRIOV_CAP_HDR10);
     pGpu->sriovState.b64bitVFBar1 = IS_BAR_64(regVal);

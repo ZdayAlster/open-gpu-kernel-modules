@@ -1689,7 +1689,7 @@ nv_pci_probe
                                                        NV_GPU_BAR_INDEX_REGS);
     NvBool bar0_requested = NV_FALSE;
 
-    nv_printf(NV_DBG_SETUP, "NVRM: probing 0x%x 0x%x, class 0x%x\n",
+    nv_printf(NV_DBG_ERRORS, "NVRM: probing 0x%x 0x%x, class 0x%x\n",
         pci_dev->vendor, pci_dev->device, pci_dev->class);
 
 #ifdef NV_PCI_SRIOV_SUPPORT
@@ -2114,7 +2114,7 @@ nv_pci_remove(struct pci_dev *pci_dev)
     NvU8 regs_bar_index = nv_bar_index_to_os_bar_index(pci_dev,
                                                        NV_GPU_BAR_INDEX_REGS);
 
-    nv_printf(NV_DBG_SETUP, "NVRM: removing GPU %04x:%02x:%02x.%x\n",
+    nv_printf(NV_DBG_ERRORS, "NVRM: removing GPU %04x:%02x:%02x.%x\n",
               NV_PCI_DOMAIN_NUMBER(pci_dev), NV_PCI_BUS_NUMBER(pci_dev),
               NV_PCI_SLOT_NUMBER(pci_dev), PCI_FUNC(pci_dev->devfn));
 
@@ -2789,6 +2789,8 @@ nv_pci_slot_reset(struct pci_dev *pdev)
 {
     nv_linux_state_t *nvl = pci_get_drvdata(pdev);
     nv_state_t *nv;
+        
+    return PCI_ERS_RESULT_DISCONNECT;
 
     if (!nvl)
     {
