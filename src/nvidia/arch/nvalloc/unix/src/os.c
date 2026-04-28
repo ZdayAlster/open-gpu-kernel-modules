@@ -2913,10 +2913,12 @@ void osModifyGpuSwStatePersistence
 {
     if (bEnable)
     {
+    	NV_PRINTF(LEVEL_ERROR, "dong enabled persistent mode\n");
         pOsGpuInfo->flags |= NV_FLAG_PERSISTENT_SW_STATE;
     }
     else
     {
+        NV_PRINTF(LEVEL_ERROR, "dong disabled persistent mode\n");
         pOsGpuInfo->flags &= ~NV_FLAG_PERSISTENT_SW_STATE;
     }
 }

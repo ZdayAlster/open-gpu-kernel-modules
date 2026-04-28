@@ -1657,6 +1657,8 @@ static int nv_open_device(nv_state_t *nv, nvidia_stack_t *sp)
         NV_DEV_PRINTF(NV_DBG_ERRORS, nv, "Device in removal process\n");
         return -ENODEV;
     }
+    
+    NV_DEV_PRINTF(NV_DBG_ERRORS, nv, " being open.............\n");
 
     if ( ! (nv->flags & NV_FLAG_OPEN))
     {
@@ -1669,6 +1671,7 @@ static int nv_open_device(nv_state_t *nv, nvidia_stack_t *sp)
             WARN_ON(1);
             return -EBUSY;
         }
+        NV_DEV_PRINTF(NV_DBG_ERRORS, nv, " start device.............\n");
 
         rc = nv_start_device(nv, sp);
         if (rc != 0){
@@ -1690,6 +1693,8 @@ static int nv_open_device(nv_state_t *nv, nvidia_stack_t *sp)
         NV_DEV_PRINTF(NV_DBG_ERRORS, nv, "Device is currently unavailable\n");
         return -EBUSY;
     }
+        
+    NV_DEV_PRINTF(NV_DBG_ERRORS, nv, " nv_assert_not_in_gpu_exclusion_list.\n");
 
     nv_assert_not_in_gpu_exclusion_list(sp, nv);
 
@@ -2028,9 +2033,10 @@ void nv_shutdown_adapter(nvidia_stack_t *sp,
 
     if (nv->flags & NV_FLAG_TRIGGER_FLR)
     {
+        nv_printf(NV_DBG_ERRORS, "NVRM: NV_FLAG_TRIGGER_FLR!\n");
         if (nvl->pci_dev)
         {
-            nv_printf(NV_DBG_INFO, "NVRM: Trigger FLR!\n");
+            nv_printf(NV_DBG_ERRORS, "NVRM: Trigger FLR!\n");
             os_pci_trigger_flr((void *)nvl->pci_dev);
         }
         else
@@ -2107,7 +2113,7 @@ static void nv_stop_device(nv_state_t *nv, nvidia_stack_t *sp)
             nv->flags |= NV_FLAG_EXCLUDE;
             UNLOCK_NV_LINUX_DEVICES();
         }
-
+#if 0
         /* Stop kthreads so they no longer attempt to access the lost GPU */
         if (!(nv->flags & NV_FLAG_PERSISTENT_SW_STATE))
         {
@@ -2187,8 +2193,8 @@ static void nv_stop_device(nv_state_t *nv, nvidia_stack_t *sp)
         }
 
         goto skip_rm_teardown;
+#endif 
     }
-
     /*
      * The GPU needs to be powered on to go through the teardown sequence.
      * This balances the FINE unref at the end of nv_start_device().
@@ -2200,10 +2206,12 @@ static void nv_stop_device(nv_state_t *nv, nvidia_stack_t *sp)
     {
         if (nv->flags & NV_FLAG_PERSISTENT_SW_STATE)
         {
+    	    NV_DEV_PRINTF(NV_DBG_WARNINGS, nv,"dong GPU %0x:rm_disable_adapter.\n",nv->pci_info.bus);
             rm_disable_adapter(sp, nv);
         }
         else
         {
+    	    NV_DEV_PRINTF(NV_DBG_WARNINGS, nv,"dong GPU %0x:nv_shutdown_adapter.\n",nv->pci_info.bus);
             nv_acpi_unregister_notifier(nvl);
 	    /*
              * Stop the rc_timer BEFORE nv_shutdown_adapter() destroys pGpu.
@@ -2217,7 +2225,7 @@ static void nv_stop_device(nv_state_t *nv, nvidia_stack_t *sp)
             nv_shutdown_adapter(sp, nv, nvl);
         }
     }
-
+#if 0
 skip_rm_teardown:
 
     if (!(nv->flags & NV_FLAG_PERSISTENT_SW_STATE))
@@ -2237,7 +2245,7 @@ skip_rm_teardown:
         //nv_stop_rc_timer(nv);
         nv_dev_free_stacks(nvl);
     }
-
+#endif 
     if ((nv->flags & NV_FLAG_PERSISTENT_SW_STATE) &&
         (!persistence_mode_notice_logged) && (!os_is_vgx_hyper()))
     {
@@ -2268,6 +2276,7 @@ skip_rm_teardown:
      * go through nv_start_device() -> rm_init_adapter() -> RmInitAdapter(),
      * which performs a full RM reinitialization including GSP firmware reload.
      */
+#if 0
     if ((nv->flags & NV_FLAG_EXCLUDE) &&
         (nv->flags & NV_FLAG_AER_NEEDS_REINIT) &&
         dev_is_pci(nvl->dev) && pci_device_is_present(nvl->pci_dev))
@@ -2278,7 +2287,7 @@ skip_rm_teardown:
         nv->flags &= ~NV_FLAG_EXCLUDE;
         nv->flags &= ~NV_FLAG_AER_NEEDS_REINIT;
     }
-
+#endif
     if (!(nv->flags & NV_FLAG_PERSISTENT_SW_STATE))
     {
         rm_unref_dynamic_power(sp, nv, NV_DYNAMIC_PM_COARSE);
@@ -2577,6 +2586,7 @@ static int nvidia_read_card_info(nv_ioctl_card_info_t *ci, size_t num_entries)
             ci[i].fb_address         = nv->fb->cpu_address;
             ci[i].fb_size            = nv->fb->size;
         }
+	 NV_DEV_PRINTF(NV_DBG_ERRORS, nv,"dong read card info GPU:%0x\n",ci[i].pci_info.bus);
         i++;
     }
 
