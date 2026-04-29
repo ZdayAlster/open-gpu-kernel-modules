@@ -894,6 +894,10 @@ typedef NV_STATUS (*uvmEventResumeP2P_t) (const NvProcessorUuid *pGpuUuidStruct)
 */
 typedef void (*uvmEventGpuBrokenAer_t) (const NvProcessorUuid *pGpuUuidStruct);
 
+// Callback to notify UVM that a GPU has recovered from AER fatal error.
+// UVM will clear the per-GPU broken flag so the GPU can be used again.
+typedef void (*uvmEventGpuUnbrokenAer_t) (const NvProcessorUuid *pGpuUuidStruct);
+
 struct UvmEventsLinux
 {
     uvmEventIsrTopHalf_t isrTopHalf;
@@ -902,6 +906,7 @@ struct UvmEventsLinux
     uvmEventDrainP2P_t drainP2P;
     uvmEventResumeP2P_t resumeP2P;
     uvmEventGpuBrokenAer_t gpuBrokenAer;
+    uvmEventGpuUnbrokenAer_t gpuUnbrokenAer;
 };
 
 struct UvmEventsWindows

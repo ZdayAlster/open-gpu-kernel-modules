@@ -955,6 +955,18 @@ static inline void uvm_gpu_set_broken(uvm_gpu_t *gpu, NV_STATUS error)
     UVM_ASSERT(error != NV_OK); 
     atomic_cmpxchg(&gpu->broken, (int)NV_OK, (int)error); 
 }
+
+// Clear the broken flag for this GPU (AER recovery).
+// Only clears if the current status is NV_ERR_RC_ERROR (AER error).
+// Returns true if the flag was cleared, false otherwise.
+// Safe to call from any context.
+static inline bool uvm_gpu_unset_broken(uvm_gpu_t *gpu)
+{
+    NV_STATUS old = (NV_STATUS)atomic_cmpxchg(&gpu->broken, 
+                                                (int)NV_ERR_RC_ERROR, 
+                                                (int)NV_OK);
+    return (old == NV_ERR_RC_ERROR);
+}
 //wbx/WBX---end
 
 typedef struct

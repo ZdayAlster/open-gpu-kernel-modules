@@ -180,6 +180,10 @@ NV_STATUS uvm_resumeP2P_entry(const NvProcessorUuid *uuid);
 // Safe to call from atomic/interrupt context (uses spinlock, not mutex).
 void uvm_gpu_broken_aer_entry(const NvProcessorUuid *uuid);
 
+// Clear the AER broken flag for a GPU (AER recovery).
+// Safe to call from process context.
+void uvm_gpu_unbroken_aer_entry(const NvProcessorUuid *uuid);
+
 // Add parent GPU to the global table.
 //
 // LOCKING: requires that you hold the global lock and gpu_table_lock

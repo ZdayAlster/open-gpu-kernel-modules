@@ -2899,6 +2899,16 @@ nv_pci_error_resume(struct pci_dev *pdev)
               "NVRM: PCI error recovery completed for GPU %04x:%02x:%02x.%x\n",
               NV_PCI_DOMAIN_NUMBER(pdev), NV_PCI_BUS_NUMBER(pdev),
               NV_PCI_SLOT_NUMBER(pdev), PCI_FUNC(pdev->devfn));
+
+    // WBX: Clear UVM broken flag after successful AER recovery.
+    // The PCIe link is now restored; clear the per-GPU broken flag so
+    // that UVM can use this GPU again.
+    // For GPUs held open by persistenced, the GPU will be re-initialized
+    // on the next open (guided by NV_FLAG_AER_NEEDS_REINIT).
+    if (!(nvl->nv_state.flags & NV_FLAG_OPEN))
+    {
+        nvUvmInterfaceGpuUnbrokenAerByNv(&nvl->nv_state);
+    }
 }
 
 static const struct pci_error_handlers nv_pci_err_handler = {

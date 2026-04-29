@@ -1788,6 +1788,36 @@ void nvUvmInterfaceGpuBrokenAerByNv(nv_state_t *nv)
 }
 EXPORT_SYMBOL(nvUvmInterfaceGpuBrokenAerByNv);
 
+static void nvUvmInterfaceGpuUnbrokenAerByUuid(const NvU8 *uuid)
+{
+    struct UvmEventsLinux *events;
+
+    if (uuid == NULL)
+        return;
+
+    /*
+     * No locking needed here — this mirrors nv_uvm_event_interrupt()
+     * which is called from ISR context. The events pointer is read once
+     * atomically via getUvmEvents().
+     */
+    events = getUvmEvents();
+    if (events && events->gpuUnbrokenAer)
+        events->gpuUnbrokenAer((const NvProcessorUuid *)uuid);
+}
+
+/*
+ * WBX: Clear the AER broken flag after successful AER recovery.
+ * Called from nv_pci_error_resume() after slot_reset() succeeds.
+ */
+void nvUvmInterfaceGpuUnbrokenAerByNv(nv_state_t *nv)
+{
+    const NvU8 *uuid;
+
+    uuid = nv_get_cached_uuid(nv);
+    nvUvmInterfaceGpuUnbrokenAerByUuid(uuid);
+}
+EXPORT_SYMBOL(nvUvmInterfaceGpuUnbrokenAerByNv);
+
 #else // NV_UVM_ENABLE
 
 NV_STATUS nv_uvm_suspend(void)

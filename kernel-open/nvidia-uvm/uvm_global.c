@@ -55,6 +55,7 @@ static NV_STATUS uvm_register_callbacks(void)
     g_exported_uvm_events.drainP2P = uvm_suspend_and_drainP2P_entry;
     g_exported_uvm_events.resumeP2P = uvm_resumeP2P_entry;
     g_exported_uvm_events.gpuBrokenAer = uvm_gpu_broken_aer_entry;
+    g_exported_uvm_events.gpuUnbrokenAer = uvm_gpu_unbroken_aer_entry;
 
     // Register the UVM callbacks with the main GPU driver:
     status = uvm_rm_locked_call(nvUvmInterfaceRegisterUvmEvents(&g_exported_uvm_events));
@@ -559,6 +560,38 @@ void uvm_gpu_broken_aer_entry(const NvProcessorUuid *uuid)
             for (j = 0; j < UVM_PARENT_ID_MAX_SUB_PROCESSORS; j++) {
                 if (parent_gpu->gpus[j])
                     uvm_gpu_set_broken(parent_gpu->gpus[j], NV_ERR_RC_ERROR);
+            }
+            break;
+        }
+    }
+
+    uvm_spin_unlock_irqrestore(&g_uvm_global.gpu_table_lock);
+}
+
+void uvm_gpu_unbroken_aer_entry(const NvProcessorUuid *uuid)
+{
+    uvm_parent_gpu_t *parent_gpu;
+    NvU32 i;
+
+    uvm_spin_lock_irqsave(&g_uvm_global.gpu_table_lock);
+
+    for (i = 0; i < UVM_PARENT_ID_MAX_GPUS; i++) {
+        parent_gpu = g_uvm_global.parent_gpus[i];
+        if (parent_gpu && uvm_uuid_eq(&parent_gpu->uuid, uuid)) {
+            NvU32 j;
+            for (j = 0; j < UVM_PARENT_ID_MAX_SUB_PROCESSORS; j++) {
+                if (parent_gpu->gpus[j]) {
+                    if (uvm_gpu_unset_broken(parent_gpu->gpus[j])) {
+                        UVM_DBG_PRINT("GPU %s broken flag cleared (AER recovery)\n",
+                                     parent_gpu->gpus[j]->name);
+                    } else {
+                        NV_STATUS status = uvm_gpu_get_broken_status(parent_gpu->gpus[j]);
+                        if (status != NV_OK) {
+                            UVM_DBG_PRINT("GPU %s broken flag NOT cleared (status: %s)\n",
+                                          parent_gpu->gpus[j]->name, nvstatusToString(status));
+                        }
+                    }
+                }
             }
             break;
         }

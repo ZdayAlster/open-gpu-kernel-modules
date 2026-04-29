@@ -1934,4 +1934,8 @@ NV_STATUS nvUvmInterfaceCslLogEncryption(UvmCslContext *uvmCslContext,
  * Uses nv_get_cached_uuid() instead of traversing nv_linux_devices list. */
 void nvUvmInterfaceGpuBrokenAerByNv(nv_state_t *nv);
 
+/* WBX: Clear the AER broken flag for a GPU (AER recovery).
+ * Called from nv_pci_error_resume() after successful AER reset. */
+void nvUvmInterfaceGpuUnbrokenAerByNv(nv_state_t *nv);
+
 #endif // _NV_UVM_INTERFACE_H_

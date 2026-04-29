@@ -2269,6 +2269,10 @@ skip_rm_teardown:
             "clearing EXCLUDE for reinit on next open\n");
         nv->flags &= ~NV_FLAG_EXCLUDE;
         nv->flags &= ~NV_FLAG_AER_NEEDS_REINIT;
+
+        // WBX: Clear UVM broken flag now that GPU is present and
+        // all clients have closed. The next open will re-initialize.
+        nvUvmInterfaceGpuUnbrokenAerByNv(nv);
     }
 
     if (!(nv->flags & NV_FLAG_PERSISTENT_SW_STATE))
