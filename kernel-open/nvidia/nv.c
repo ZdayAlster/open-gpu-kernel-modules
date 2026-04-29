@@ -1669,17 +1669,10 @@ static int nv_open_device(nv_state_t *nv, nvidia_stack_t *sp)
         }
 
         rc = nv_start_device(nv, sp);
-        if (rc != 0){
-	        //wbx新增 如果 rm_init_adapter 失败，标记设备为 excluded
-            //避免后续其他进程重复尝试初始化失败设备
-            if (rc == -EIO)
-            {
-                nv->flags |= NV_FLAG_EXCLUDE;
-                NV_DEV_PRINTF(NV_DBG_ERRORS, nv,
-                          "Excluding GPU due to initialization failure\n");
-            }
+        if (rc != 0)
+        {
             return rc;
-	    }
+        }
     }
     else if (rm_is_device_sequestered(sp, nv))
     {
@@ -1966,6 +1959,97 @@ failed:
     return rc;
 }
 
+/*
+ * WBX: Helper to free IRQs and stop kthreads without calling GSP RPCs.
+ *
+ * This is used in two places that must not enter the full RM teardown path:
+ *   - nv_stop_device() GPU-lost / AER-excluded fast path
+ *   - nv_pci_remove() safety net for the usage_count == 0 case
+ *
+ * The function is idempotent-safe: it checks pointers/flags before touching
+ * anything, so calling it multiple times (or after a partial teardown) is
+ * safe.  nv_shutdown_adapter() keeps its own inline copy of this logic
+ * and is NOT modified -- it calls rm_disable_adapter() / rm_shutdown_adapter()
+ * which this helper deliberately avoids.
+ */
+void nv_free_irqs_and_kthreads(nv_state_t *nv, nv_linux_state_t *nvl)
+{
+    /*
+     * Unregister ACPI notifier (idempotent — no-op if not registered).
+     * Also stops bottom-half and work queues.
+     * nv_kthread_q_stop() is safe to call even if the queue was never
+     * initialised (it checks internally).
+     */
+    nv_acpi_unregister_notifier(nvl);
+    nv_kthread_q_stop(&nvl->bottom_half_q);
+    if (nv->queue != NULL)
+    {
+        nv->queue = NULL;
+        nv_kthread_q_stop(&nvl->queue.nvk);
+    }
+
+    /*
+     * Free msix_bh_mutex (used to serialise MSI-X bottom-half handlers).
+     */
+    if (nvl->msix_bh_mutex)
+    {
+        os_free_mutex(nvl->msix_bh_mutex);
+        nvl->msix_bh_mutex = NULL;
+    }
+
+    /*
+     * Free isr_bh_unlocked_mutex.
+     * This mutex is allocated in nv_open_device() for non-persistent devices
+     * and is used by nvidia_isr_bh_unlocked() to protect the shared stack.
+     * Without this free, the mutex object leaks when we skip
+     * nv_shutdown_adapter() (GPU-lost / AER-excluded fast path).
+     */
+    if (nvl->isr_bh_unlocked_mutex)
+    {
+        os_free_mutex(nvl->isr_bh_unlocked_mutex);
+        nvl->isr_bh_unlocked_mutex = NULL;
+    }
+
+    /*
+     * Free IRQ resources.
+     * Matches the three-way branch in nv_shutdown_adapter().
+     */
+    if (!(nv->flags & NV_FLAG_USES_MSIX) &&
+        !(nv->flags & NV_FLAG_SOC_DISPLAY))
+    {
+        free_irq(nv->interrupt_line, (void *)nvl);
+        if (nv->flags & NV_FLAG_USES_MSI)
+        {
+            NV_PCI_DISABLE_MSI(nvl->pci_dev);
+            nv->flags &= ~NV_FLAG_USES_MSI;
+            if (nvl->irq_count)
+            {
+                NV_KFREE(nvl->irq_count,
+                         nvl->num_intr * sizeof(nv_irq_count_info_t));
+                nvl->irq_count = NULL;
+            }
+        }
+    }
+    else if (nv->flags & NV_FLAG_SOC_DISPLAY)
+    {
+        nv_soc_free_irqs(nv);
+    }
+#if defined(NV_LINUX_PCIE_MSI_SUPPORTED)
+    else
+    {
+        nv_free_msix_irq(nvl);
+        pci_disable_msix(nvl->pci_dev);
+        nv->flags &= ~NV_FLAG_USES_MSIX;
+        NV_KFREE(nvl->msix_entries,
+                 nvl->num_intr * sizeof(struct msix_entry));
+        nvl->msix_entries = NULL;
+        NV_KFREE(nvl->irq_count,
+                 nvl->num_intr * sizeof(nv_irq_count_info_t));
+        nvl->irq_count = NULL;
+    }
+#endif
+}
+
 void nv_shutdown_adapter(nvidia_stack_t *sp,
                          nv_state_t *nv,
                          nv_linux_state_t *nvl)
@@ -2103,72 +2187,18 @@ static void nv_stop_device(nv_state_t *nv, nvidia_stack_t *sp)
             UNLOCK_NV_LINUX_DEVICES();
         }
 
-        /* Stop kthreads so they no longer attempt to access the lost GPU */
-        if (!(nv->flags & NV_FLAG_PERSISTENT_SW_STATE))
-        {
-            nv_acpi_unregister_notifier(nvl);
-            nv_kthread_q_stop(&nvl->bottom_half_q);
-            if (nv->queue != NULL)
-            {
-                nv->queue = NULL;
-                nv_kthread_q_stop(&nvl->queue.nvk);
-            }
-        }
-
         /*
-         * WBX: Free MSI/MSI-X interrupt vectors even though we skip RM teardown.
+         * WBX: Use the shared helper to free all resources we need to clean
+         * up when skipping RM teardown.  This replaces the previous inline
+         * block (kthreads + IRQs + msix_bh_mutex) and additionally fixes the
+         * isr_bh_unlocked_mutex leak.  The helper is idempotent-safe so
+         * double-calling is harmless.
          *
-         * Without this, after an AER-injected GPU is excluded and clients exit,
-         * the MSI irq_desc entries remain mapped in the kernel's irq_domain.
-         * A subsequent sysfs remove + rescan triggers:
-         *   WARNING: irq_domain_remove with active mappings
-         *   WARNING: msi_device_data_release with stale MSI descriptors
-         * The leaked/stale irq_desc is later accessed by show_interrupts()
-         * (via /proc/interrupts), hitting freed SLUB memory and causing a
-         * kernel panic (page fault at address 0x1000).
-         *
-         * free_irq() and pci_disable_msix()/NV_PCI_DISABLE_MSI() are safe
-         * to call on a lost GPU — they only manipulate the kernel's interrupt
-         * bookkeeping (irq_desc, irq_domain, MSI descriptors) and do not
-         * touch GPU hardware registers. The MSI address/data is written by
-         * the kernel during request_irq(), not read back during free_irq().
+         * NOTE: nv_acpi_unregister_notifier() inside the helper is also a
+         * no-op when the notifier was never registered (e.g., persistent mode
+         * or the device was never opened).
          */
-        if (!(nv->flags & NV_FLAG_USES_MSIX) &&
-            !(nv->flags & NV_FLAG_SOC_DISPLAY))
-        {
-            free_irq(nv->interrupt_line, (void *)nvl);
-            if (nv->flags & NV_FLAG_USES_MSI)
-            {
-                NV_PCI_DISABLE_MSI(nvl->pci_dev);
-                if (nvl->irq_count)
-                {
-                    NV_KFREE(nvl->irq_count,
-                             nvl->num_intr * sizeof(nv_irq_count_info_t));
-                }
-            }
-        }
-        else if (nv->flags & NV_FLAG_SOC_DISPLAY)
-        {
-            nv_soc_free_irqs(nv);
-        }
-#if defined(NV_LINUX_PCIE_MSI_SUPPORTED)
-        else
-        {
-            nv_free_msix_irq(nvl);
-            pci_disable_msix(nvl->pci_dev);
-            nv->flags &= ~NV_FLAG_USES_MSIX;
-            NV_KFREE(nvl->msix_entries,
-                     nvl->num_intr * sizeof(struct msix_entry));
-            NV_KFREE(nvl->irq_count,
-                     nvl->num_intr * sizeof(nv_irq_count_info_t));
-        }
-#endif
-
-        if (nvl->msix_bh_mutex)
-        {
-            os_free_mutex(nvl->msix_bh_mutex);
-            nvl->msix_bh_mutex = NULL;
-        }
+        nv_free_irqs_and_kthreads(nv, nvl);
 
         goto skip_rm_teardown;
     }
@@ -2510,7 +2540,7 @@ static int nvidia_read_card_info(nv_ioctl_card_info_t *ci, size_t num_entries)
         if ((nv->flags & NV_FLAG_EXCLUDE) != 0)
             continue;
 	
-	//wbx新增：检查设备是否可访问
+	    //wbx新增：检查设备是否可访问
         // 对于已经知道有问题的设备，跳过它
         if (nv->removed)
             continue;

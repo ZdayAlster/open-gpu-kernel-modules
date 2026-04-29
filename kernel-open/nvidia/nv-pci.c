@@ -2333,44 +2333,19 @@ nv_pci_remove(struct pci_dev *pci_dev)
      * Normally MSI vectors are freed in nv_shutdown_adapter() (called from
      * nv_stop_device on last close, or directly here when OPEN/PERSISTENT).
      * However, in the AER-excluded path:
-     *   1. nv_stop_device() skips nv_shutdown_adapter() to avoid GSP RPC timeout
-     *      (GPU-lost fast path) — but now frees MSI before skip_rm_teardown.
+     *   1. nv_stop_device() now calls nv_free_irqs_and_kthreads() to handle
+     *      all cleanup in the GPU-lost fast path (kthreads + mutexes + IRQs).
      *   2. If no client ever opened the GPU (usage_count stayed 0), neither
      *      nv_stop_device nor nv_shutdown_adapter was ever called.
      *
-     * As a safety net, check if MSI/MSI-X vectors are still allocated and
-     * free them here.  free_irq() is idempotent-safe if already freed (returns
-     * -EINVAL), and pci_disable_msix()/NV_PCI_DISABLE_MSI() are no-ops if
-     * MSI was already torn down.  This runs before NV_PCI_DISABLE_DEVICE so
-     * the PCI device is still in a state where the kernel can clean up its
-     * irq_domain mappings.
+     * Use the shared helper as a safety net.  It checks pointers/flags before
+     * touching anything so it is idempotent-safe even when called a second
+     * time (e.g., if nv_stop_device already ran but the IRQ free was skipped
+     * for some reason).  This runs before NV_PCI_DISABLE_DEVICE so the PCI
+     * device is still in a state where the kernel can clean up its irq_domain
+     * mappings.
      */
-    if (nv->flags & NV_FLAG_USES_MSI)
-    {
-        free_irq(nv->interrupt_line, (void *)nvl);
-        NV_PCI_DISABLE_MSI(pci_dev);
-        nv->flags &= ~NV_FLAG_USES_MSI;
-        if (nvl->irq_count)
-        {
-            NV_KFREE(nvl->irq_count,
-                     nvl->num_intr * sizeof(nv_irq_count_info_t));
-            nvl->irq_count = NULL;
-        }
-    }
-#if defined(NV_LINUX_PCIE_MSI_SUPPORTED)
-    else if (nv->flags & NV_FLAG_USES_MSIX)
-    {
-        nv_free_msix_irq(nvl);
-        pci_disable_msix(pci_dev);
-        nv->flags &= ~NV_FLAG_USES_MSIX;
-        NV_KFREE(nvl->msix_entries,
-                 nvl->num_intr * sizeof(struct msix_entry));
-        nvl->msix_entries = NULL;
-        NV_KFREE(nvl->irq_count,
-                 nvl->num_intr * sizeof(nv_irq_count_info_t));
-        nvl->irq_count = NULL;
-    }
-#endif
+    nv_free_irqs_and_kthreads(nv, nvl);
 
     if (atomic64_read(&nvl->usage_count) == 0)
     {
