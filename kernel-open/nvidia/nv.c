@@ -1626,13 +1626,41 @@ static int nv_open_device(nv_state_t *nv, nvidia_stack_t *sp)
 
     if ((nv->flags & NV_FLAG_EXCLUDE) != 0)
     {
-        char *uuid = rm_get_gpu_uuid(sp, nv);
-        NV_DEV_PRINTF(NV_DBG_ERRORS, nv,
-                      "open() not permitted for excluded %s\n",
-                      (uuid != NULL) ? uuid : "GPU");
-        if (uuid != NULL)
-            os_free_mem(uuid);
-        return -EPERM;
+        /*
+         * WBX: AER recovery path — if NV_FLAG_AER_NEEDS_REINIT is set,
+         * the PCIe link has recovered and we should clear EXCLUDE so the
+         * GPU can be used again.  This handles the persistenced case where
+         * usage_count never drops to 0 (so nv_stop_device() never runs
+         * the EXCLUDE-clear logic at its line 2263).
+         *
+         * Condition: EXCLUDE must be set (we are in AER recovery path),
+         *            AER_NEEDS_REINIT must be set (PCIe slot reset succeeded),
+         *            GPU must be physically present.
+         */
+        if ((nv->flags & NV_FLAG_AER_NEEDS_REINIT) &&
+            dev_is_pci(nvl->dev) && pci_device_is_present(nvl->pci_dev))
+        {
+            nv_printf(NV_DBG_WARNINGS,
+                      "AER recovered: clearing EXCLUDE for in-use GPU %04x:%02x:%02x.%x\n",
+                      NV_PCI_DOMAIN_NUMBER(nvl->pci_dev),
+                      NV_PCI_BUS_NUMBER(nvl->pci_dev),
+                      NV_PCI_SLOT_NUMBER(nvl->pci_dev),
+                      PCI_FUNC(nvl->pci_dev->devfn));
+            nv->flags &= ~NV_FLAG_EXCLUDE;
+            nv->flags &= ~NV_FLAG_AER_NEEDS_REINIT;
+            nvUvmInterfaceGpuUnbrokenAerByNv(nv);
+            /* Fall through to normal open path */
+        }
+        else
+        {
+            char *uuid = rm_get_gpu_uuid(sp, nv);
+            NV_DEV_PRINTF(NV_DBG_ERRORS, nv,
+                          "open() not permitted for excluded %s\n",
+                          (uuid != NULL) ? uuid : "GPU");
+            if (uuid != NULL)
+                os_free_mem(uuid);
+            return -EPERM;
+        }
     }
 
     if (os_is_vgx_hyper())
@@ -1654,6 +1682,23 @@ static int nv_open_device(nv_state_t *nv, nvidia_stack_t *sp)
     {
         NV_DEV_PRINTF(NV_DBG_INFO, nv, "Device in removal process\n");
         return -ENODEV;
+    }
+
+    /*
+     * WBX: Force RM reinitialization if AER recovery needs it.
+     * When persistenced holds a reference, NV_FLAG_OPEN stays set and
+     * the normal !NV_FLAG_OPEN path is skipped.  We clear OPEN
+     * temporarily so that nv_start_device will fully reinitialize RM.
+     */
+    if ((nv->flags & NV_FLAG_AER_NEEDS_REINIT) && (nv->flags & NV_FLAG_OPEN))
+    {
+        nv_printf(NV_DBG_WARNINGS,
+                  "AER recovery: forcing RM reinitialization for GPU %04x:%02x:%02x.%x\n",
+                  NV_PCI_DOMAIN_NUMBER(nvl->pci_dev),
+                  NV_PCI_BUS_NUMBER(nvl->pci_dev),
+                  NV_PCI_SLOT_NUMBER(nvl->pci_dev),
+                  PCI_FUNC(nvl->pci_dev->devfn));
+        nv->flags &= ~NV_FLAG_OPEN;  /* let nv_start_device do full init */
     }
 
     if ( ! (nv->flags & NV_FLAG_OPEN))
