@@ -307,6 +307,12 @@ static NV_STATUS uvm_gpu_check_status(uvm_gpu_t *gpu)
 // reset call was made.
 NV_STATUS uvm_global_reset_fatal_error(void);
 
+// WBX: Reset global fatal_error only if it's NV_ERR_RC_ERROR (AER-related).
+// Returns the previous value of fatal_error.
+// If the previous value was NV_ERR_RC_ERROR, it has been cleared to NV_OK.
+// If the previous value was something else (e.g., ECC error), it is NOT cleared.
+NV_STATUS uvm_global_reset_fatal_error_if_rc_error(void);
+
 static uvm_gpu_t *uvm_processor_mask_find_first_gpu(const uvm_processor_mask_t *gpus)
 {
     uvm_gpu_t *gpu;

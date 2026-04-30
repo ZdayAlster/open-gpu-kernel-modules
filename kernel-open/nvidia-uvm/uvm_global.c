@@ -446,6 +446,22 @@ NV_STATUS uvm_global_reset_fatal_error(void)
     return atomic_xchg(&g_uvm_global.fatal_error, NV_OK);
 }
 
+// WBX: Reset global fatal_error only if it was set due to AER (NV_ERR_RC_ERROR).
+// This is safe to call in production because:
+// 1. It only resets if fatal_error == NV_ERR_RC_ERROR (AER-specific)
+// 2. If fatal_error was set due to other reasons (ECC, etc.), it won't reset
+// 3. Uses atomic_cmpxchg for thread safety
+NV_STATUS uvm_global_reset_fatal_error_if_rc_error(void)
+{
+    NV_STATUS old = (NV_STATUS)atomic_cmpxchg(&g_uvm_global.fatal_error, 
+                                                (int)NV_ERR_RC_ERROR, 
+                                                (int)NV_OK);
+    if (old == NV_ERR_RC_ERROR) {
+        UVM_DBG_PRINT("Global fatal_error cleared (was NV_ERR_RC_ERROR, AER recovery)\n");
+    }
+    return old;
+}
+
 void uvm_global_gpu_retain(const uvm_processor_mask_t *mask)
 {
     uvm_gpu_t *gpu;
@@ -598,6 +614,13 @@ void uvm_gpu_unbroken_aer_entry(const NvProcessorUuid *uuid)
     }
 
     uvm_spin_unlock_irqrestore(&g_uvm_global.gpu_table_lock);
+
+    // WBX: Also reset global fatal_error if it was set due to AER (NV_ERR_RC_ERROR).
+    // This is safe because:
+    // 1. We only reset if fatal_error == NV_ERR_RC_ERROR (AER-specific)
+    // 2. If fatal_error was set due to other reasons (e.g., ECC), it won't be reset
+    // 3. The per-GPU broken flags have already been cleared above
+    uvm_global_reset_fatal_error_if_rc_error();
 }
 
 NV_STATUS uvm_global_gpu_check_nvlink_error(uvm_processor_mask_t *gpus)
