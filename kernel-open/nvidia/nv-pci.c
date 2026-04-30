@@ -2860,6 +2860,21 @@ nv_pci_slot_reset(struct pci_dev *pdev)
                   NV_PCI_DOMAIN_NUMBER(pdev), NV_PCI_BUS_NUMBER(pdev),
                   NV_PCI_SLOT_NUMBER(pdev), PCI_FUNC(pdev->devfn));
         nv->flags &= ~NV_FLAG_EXCLUDE;
+
+        /*
+         * WBX: Re-initialize modeset layer after AER recovery.
+         *
+         * error_detected() called nvidia_modeset_remove_excluded() which
+         * cleared pDevEvo->openedGpuIds[] and set pDevEvo->excluded = NV_TRUE.
+         * We must call nvidia_modeset_resume() here to re-initialize the
+         * modeset layer and re-populate openedGpuIds[], otherwise subsequent
+         * nvEvoSetDeviceExcluded() calls will fail with "gpuId 0x%x not found".
+         *
+         * This fix addresses the "nvEvoSetDeviceExcluded: gpuId 0xb00 not found"
+         * error that occurs when AER recovery completes but modeset layer is not
+         * properly re-initialized.
+         */
+        nvidia_modeset_resume(nv->gpu_id);
     }
     else
     {

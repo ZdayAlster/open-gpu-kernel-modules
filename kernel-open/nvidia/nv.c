@@ -2315,6 +2315,20 @@ skip_rm_teardown:
         nv->flags &= ~NV_FLAG_EXCLUDE;
         nv->flags &= ~NV_FLAG_AER_NEEDS_REINIT;
 
+        /*
+         * WBX: Re-initialize modeset layer after AER recovery.
+         *
+         * error_detected() called nvidia_modeset_remove_excluded() which
+         * cleared pDevEvo->openedGpuIds[] and set pDevEvo->excluded = NV_TRUE.
+         * Now that all clients have closed and the GPU is present on bus,
+         * we must call nvidia_modeset_resume() to re-initialize the modeset
+         * layer and re-populate openedGpuIds[].
+         *
+         * Without this call, subsequent nvEvoSetDeviceExcluded() calls will
+         * fail with "gpuId 0x%x not found" because openedGpuIds[] is empty.
+         */
+        nvidia_modeset_resume(nv->gpu_id);
+
         // WBX: Clear UVM broken flag now that GPU is present and
         // all clients have closed. The next open will re-initialize.
         nvUvmInterfaceGpuUnbrokenAerByNv(nv);
