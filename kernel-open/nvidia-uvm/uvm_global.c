@@ -446,18 +446,32 @@ NV_STATUS uvm_global_reset_fatal_error(void)
     return atomic_xchg(&g_uvm_global.fatal_error, NV_OK);
 }
 
-// WBX: Reset global fatal_error only if it was set due to AER (NV_ERR_RC_ERROR).
-// This is safe to call in production because:
-// 1. It only resets if fatal_error == NV_ERR_RC_ERROR (AER-specific)
-// 2. If fatal_error was set due to other reasons (ECC, etc.), it won't reset
-// 3. Uses atomic_cmpxchg for thread safety
+// WBX: Reset global fatal_error only if it was set to NV_ERR_RC_ERROR.
+//
+// BACKGROUND: After the fix in uvm_channel.c, when a GPU is already broken
+// by the AER path (uvm_gpu_is_broken() == true), uvm_global_set_fatal_error()
+// is no longer called for channel errors on that GPU. This means AER-induced
+// channel errors no longer set fatal_error at all.
+//
+// However, there is still a narrow race window between:
+//   1. The GSP RC notification arriving (triggering uvm_channel_check_errors)
+//   2. The AER error_detected() callback setting gpu->broken
+//
+// If the channel error is processed BEFORE gpu->broken is set, then
+// uvm_global_set_fatal_error(NV_ERR_RC_ERROR) will be called even for an
+// AER-induced fault. This function handles that race by clearing fatal_error
+// only when it equals NV_ERR_RC_ERROR.
+//
+// Safety: We do NOT clear if fatal_error is any other value (e.g.
+// NV_ERR_ECC_ERROR, NV_ERR_INVALID_STATE, etc.) so non-AER fatal errors
+// are always preserved.
 NV_STATUS uvm_global_reset_fatal_error_if_rc_error(void)
 {
     NV_STATUS old = (NV_STATUS)atomic_cmpxchg(&g_uvm_global.fatal_error, 
                                                 (int)NV_ERR_RC_ERROR, 
                                                 (int)NV_OK);
     if (old == NV_ERR_RC_ERROR) {
-        UVM_DBG_PRINT("Global fatal_error cleared (was NV_ERR_RC_ERROR, AER recovery)\n");
+        UVM_DBG_PRINT("Global fatal_error cleared (was NV_ERR_RC_ERROR, AER race-window recovery)\n");
     }
     return old;
 }

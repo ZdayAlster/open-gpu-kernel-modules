@@ -2145,11 +2145,8 @@ NV_STATUS uvm_channel_check_errors(uvm_channel_t *channel)
             // effect — do NOT escalate to global fatal_error.
             UVM_ERR_PRINT("GPU %s channel error after AER isolation, skipping global fatal\n",
                           uvm_gpu_name(gpu));
-        } if (status == NV_ERR_ECC_ERROR) {
-            // True ECC uncorrectable error (not AER-induced) → global fatal
-            uvm_global_set_fatal_error(status);
         } else {
-            // Other unrecoverable errors → global fatal (original behavior)
+            // Non-AER channel error → global fatal (original behavior)
             uvm_global_set_fatal_error(status);
         }
     }
