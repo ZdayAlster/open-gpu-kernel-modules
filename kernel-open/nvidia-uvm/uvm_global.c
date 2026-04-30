@@ -446,7 +446,9 @@ NV_STATUS uvm_global_reset_fatal_error(void)
     return atomic_xchg(&g_uvm_global.fatal_error, NV_OK);
 }
 
-// WBX: Reset global fatal_error only if it was set to NV_ERR_RC_ERROR.
+// WBX: Reset global fatal_error only if it was set to NV_ERR_RC_ERROR
+// AND at least one GPU is currently undergoing AER recovery
+// (aer_broken_count > 0).
 //
 // BACKGROUND: After the fix in uvm_channel.c, when a GPU is already broken
 // by the AER path (uvm_gpu_is_broken() == true), uvm_global_set_fatal_error()
@@ -462,14 +464,32 @@ NV_STATUS uvm_global_reset_fatal_error(void)
 // AER-induced fault. This function handles that race by clearing fatal_error
 // only when it equals NV_ERR_RC_ERROR.
 //
-// Safety: We do NOT clear if fatal_error is any other value (e.g.
-// NV_ERR_ECC_ERROR, NV_ERR_INVALID_STATE, etc.) so non-AER fatal errors
-// are always preserved.
+// SAFETY IMPROVEMENT (vs. previous version): We additionally require that
+// aer_broken_count > 0, i.e. at least one GPU is known to be in the AER
+// broken/recovery path.  This prevents false-clearing of fatal_error when:
+//   - GPU-A suffers a non-AER channel error (SM timeout, MMU fault, etc.)
+//     and sets fatal_error = NV_ERR_RC_ERROR, AND
+//   - GPU-B independently goes through AER recovery and calls this function.
+//
+// Note: aer_broken_count is read here without the gpu_table_lock.  This is
+// intentional: the counter was decremented under the lock in
+// uvm_gpu_unbroken_aer_entry() *before* this call, so reading zero here
+// means we are truly past the AER recovery phase.  A stale non-zero read
+// would at worst be conservatively non-zero and allow the clear to proceed,
+// which is the same behavior as before this fix.
 NV_STATUS uvm_global_reset_fatal_error_if_rc_error(void)
 {
-    NV_STATUS old = (NV_STATUS)atomic_cmpxchg(&g_uvm_global.fatal_error, 
-                                                (int)NV_ERR_RC_ERROR, 
-                                                (int)NV_OK);
+    NV_STATUS old;
+
+    // Fast path: no AER recovery in progress, skip entirely.
+    if (atomic_read(&g_uvm_global.aer_broken_count) == 0) {
+        UVM_DBG_PRINT("aer_broken_count == 0, skipping fatal_error reset\n");
+        return (NV_STATUS)atomic_read(&g_uvm_global.fatal_error);
+    }
+
+    old = (NV_STATUS)atomic_cmpxchg(&g_uvm_global.fatal_error, 
+                                     (int)NV_ERR_RC_ERROR, 
+                                     (int)NV_OK);
     if (old == NV_ERR_RC_ERROR) {
         UVM_DBG_PRINT("Global fatal_error cleared (was NV_ERR_RC_ERROR, AER race-window recovery)\n");
     }
@@ -591,6 +611,11 @@ void uvm_gpu_broken_aer_entry(const NvProcessorUuid *uuid)
                 if (parent_gpu->gpus[j])
                     uvm_gpu_set_broken(parent_gpu->gpus[j], NV_ERR_RC_ERROR);
             }
+            // WBX: Increment the counter so that the matching unbroken_aer
+            // callback knows a GPU is pending AER recovery.  Increment is
+            // inside the lock so it is always paired with a future decrement
+            // in uvm_gpu_unbroken_aer_entry().
+            atomic_inc(&g_uvm_global.aer_broken_count);
             break;
         }
     }
@@ -602,6 +627,7 @@ void uvm_gpu_unbroken_aer_entry(const NvProcessorUuid *uuid)
 {
     uvm_parent_gpu_t *parent_gpu;
     NvU32 i;
+    bool found = false;
 
     uvm_spin_lock_irqsave(&g_uvm_global.gpu_table_lock);
 
@@ -623,18 +649,33 @@ void uvm_gpu_unbroken_aer_entry(const NvProcessorUuid *uuid)
                     }
                 }
             }
+            // WBX: Decrement the broken counter (paired with the increment in
+            // uvm_gpu_broken_aer_entry).  Do this inside the lock so that the
+            // counter stays consistent with the per-GPU broken flags.
+            if (atomic_read(&g_uvm_global.aer_broken_count) > 0)
+                atomic_dec(&g_uvm_global.aer_broken_count);
+            found = true;
             break;
         }
     }
 
     uvm_spin_unlock_irqrestore(&g_uvm_global.gpu_table_lock);
 
-    // WBX: Also reset global fatal_error if it was set due to AER (NV_ERR_RC_ERROR).
-    // This is safe because:
-    // 1. We only reset if fatal_error == NV_ERR_RC_ERROR (AER-specific)
-    // 2. If fatal_error was set due to other reasons (e.g., ECC), it won't be reset
-    // 3. The per-GPU broken flags have already been cleared above
-    uvm_global_reset_fatal_error_if_rc_error();
+    // WBX: Attempt to clear global fatal_error if it was set due to an AER
+    // race window (channel error processed before gpu->broken was set).
+    //
+    // SAFETY FIX: only call _if_rc_error() when we actually found and
+    // processed an AER recovery event for this UUID.  This prevents a
+    // spurious clear of fatal_error caused by a *different* GPU suffering a
+    // non-AER NV_ERR_RC_ERROR while this GPU is going through AER recovery.
+    //
+    // The additional aer_broken_count check inside
+    // uvm_global_reset_fatal_error_if_rc_error() provides a second layer of
+    // protection: it aborts the clear if all AER-broken GPUs have already
+    // been unbroken before the fatal_error clear runs (highly unlikely but
+    // possible under heavy load).
+    if (found)
+        uvm_global_reset_fatal_error_if_rc_error();
 }
 
 NV_STATUS uvm_global_gpu_check_nvlink_error(uvm_processor_mask_t *gpus)

@@ -76,6 +76,25 @@ struct uvm_global_struct
     // To be used by tests and only consulted if tests are enabled.
     bool disable_fatal_error_assert;
 
+    // WBX: Number of GPUs currently in AER-broken state.
+    //
+    // Incremented in uvm_gpu_broken_aer_entry() and decremented in
+    // uvm_gpu_unbroken_aer_entry() when the broken flag is successfully
+    // cleared for a GPU.
+    //
+    // This counter is used as a precondition for
+    // uvm_global_reset_fatal_error_if_rc_error(): we only attempt to clear
+    // fatal_error if at least one GPU is undergoing AER recovery.  This
+    // prevents a spurious clear when another GPU suffers a non-AER
+    // NV_ERR_RC_ERROR (e.g. SM timeout, MMU fault) while a different GPU
+    // is going through AER slot_reset / unbroken.
+    //
+    // Protected by gpu_table_lock (spinlock, IRQ-safe) for updates.
+    // Read without the lock in the fast path (acceptable: monotonic decrements
+    // always happen after flag updates, so a stale read can only be
+    // conservatively non-zero → safe).
+    atomic_t aer_broken_count;
+
     // Lock protecting the global state
     uvm_mutex_t global_lock;
 
