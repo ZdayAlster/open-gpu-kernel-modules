@@ -3531,6 +3531,58 @@ cleanup:
     return status;
 }
 
+// WBX: During AER fault injection tests, IS_SPLIT root chunks may have
+// subchunks that were allocated from slab but never freed back. This can
+// happen in init failure rollback path or error injection scenarios.
+// Without cleanup, the subchunk objects remain in the slab cache,
+// causing kmem_cache_destroy to fail with "Objects remaining" errors.
+//
+// This cleanup function frees all subchunk objects back to the slab cache
+// without requiring full GPU merge operations (GPU may already be gone).
+static void cleanup_isolated_split_chunks(uvm_pmm_gpu_t *pmm)
+{
+    size_t i;
+    bool found_split = false;
+
+    if (!pmm->root_chunks.array)
+        return;
+
+    for (i = 0; i < pmm->root_chunks.count; ++i) {
+        uvm_gpu_root_chunk_t *root_chunk = &pmm->root_chunks.array[i];
+        uvm_gpu_chunk_t *chunk = &root_chunk->chunk;
+
+        if (chunk->state != UVM_PMM_GPU_CHUNK_STATE_IS_SPLIT)
+            continue;
+
+        found_split = true;
+
+        if (chunk->suballoc) {
+            size_t j, num_sub = num_subchunks(chunk);
+
+            // Free all subchunk objects back to slab cache.
+            // Skip list operations since GPU is going away anyway.
+            for (j = 0; j < num_sub; j++) {
+                uvm_gpu_chunk_t *subchunk = chunk->suballoc->subchunks[j];
+                if (subchunk)
+                    kmem_cache_free(CHUNK_CACHE, subchunk);
+            }
+
+            // Free the suballoc structure back to its corresponding slab cache
+            kmem_cache_free(chunk_split_cache[ilog2(num_sub)].cache, chunk->suballoc);
+            chunk->suballoc = NULL;
+        }
+
+        // Mark root chunk as PMA_OWNED so subsequent checks pass.
+        // The physical pages will be freed by the PMA cleanup.
+        chunk->state = UVM_PMM_GPU_CHUNK_STATE_PMA_OWNED;
+    }
+
+    if (found_split) {
+        printk(KERN_WARNING "NVRM: uvm_pmm_gpu_deinit: Cleaned up %zu IS_SPLIT chunks\n",
+               (unsigned long)pmm->root_chunks.count);
+    }
+}
+
 // Return to PMA any remaining free root chunks. Currently only USER
 // (non-pinned) chunks are pre-allocated, so the KERNEL free list should be
 // empty at this point. However, we may want to batch the allocation of pinned
@@ -3564,6 +3616,11 @@ void uvm_pmm_gpu_deinit(uvm_pmm_gpu_t *pmm)
     UVM_ASSERT(list_empty(&pmm->root_chunks.va_block_lazy_free));
     UVM_ASSERT(uvm_pmm_gpu_check_orphan_pages(pmm));
     release_free_root_chunks(pmm);
+
+    // WBX: Cleanup any IS_SPLIT root chunks that may have leaked subchunk
+    // objects. This handles the case where init failed or AER fault injection
+    // left the PMM in an inconsistent state.
+    cleanup_isolated_split_chunks(pmm);
 
     if (gpu->mem_info.size != 0 && gpu_supports_pma_eviction(gpu))
         nvUvmInterfacePmaUnregisterEvictionCallbacks(pmm->pma);
