@@ -693,6 +693,11 @@ typedef struct UvmGpuAccessBitsBufferAlloc_tag      *nvgpuAccessBitBufferAlloc_t
  * Cleared by nv_stop_device when last client closes and device is present.
  * Allows automatic GPU reinitialization after AER recovery without reboot. */
 #define NV_FLAG_AER_NEEDS_REINIT               0x10000
+/* WBX: Set after request_threaded_irq() or equivalent succeeds.
+ * Cleared automatically when free_irq() is called.
+ * Prevents spurious free_irq() on IRQs that were never allocated
+ * (e.g., when NV_FLAG_PERSISTENT_SW_STATE skips registration). */
+#define NV_FLAG_IRQ_ALLOCATED                  0x20000
 
 typedef enum
 {

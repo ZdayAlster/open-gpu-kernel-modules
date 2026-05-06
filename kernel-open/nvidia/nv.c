@@ -1464,6 +1464,21 @@ static int nv_start_device(nv_state_t *nv, nvidia_stack_t *sp)
         goto failed;
     }
 
+    /*
+     * WBX: Set NV_FLAG_IRQ_ALLOCATED to track successful IRQ registration.
+     * This prevents nv_free_irqs_and_kthreads() from calling free_irq()
+     * on an IRQ that was never allocated (e.g., when PERSISTENT_SW_STATE
+     * skips the entire registration block).
+     *
+     * The flag is set when:
+     *   - PERSISTENT_SW_STATE is NOT set AND rc == 0 (IRQ was registered)
+     * The flag is NOT set when:
+     *   - PERSISTENT_SW_STATE is set (registration skipped, no free needed)
+     *   - rc != 0 (registration failed, goes to 'failed' label)
+     */
+    if (!(nv->flags & NV_FLAG_PERSISTENT_SW_STATE))
+        nv->flags |= NV_FLAG_IRQ_ALLOCATED;
+
     if (!(nv->flags & NV_FLAG_PERSISTENT_SW_STATE))
     {
         rc = os_alloc_mutex(&nvl->isr_bh_unlocked_mutex);
@@ -1528,16 +1543,22 @@ failed_release_irq:
         if (!(nv->flags & NV_FLAG_USES_MSIX) &&
             !(nv->flags & NV_FLAG_SOC_DISPLAY))
         {
-            free_irq(nv->interrupt_line, (void *) nvl);
+            if (nv->flags & NV_FLAG_IRQ_ALLOCATED)
+            {
+                free_irq(nv->interrupt_line, (void *) nvl);
+                nv->flags &= ~NV_FLAG_IRQ_ALLOCATED;
+            }
         }
         else if (nv->flags & NV_FLAG_SOC_DISPLAY)
         {
             nv_soc_free_irqs(nv);
+            nv->flags &= ~NV_FLAG_IRQ_ALLOCATED;
         }
 #if defined(NV_LINUX_PCIE_MSI_SUPPORTED)
         else
         {
             nv_free_msix_irq(nvl);
+            nv->flags &= ~NV_FLAG_IRQ_ALLOCATED;
         }
 #endif
     }
@@ -2090,11 +2111,20 @@ void nv_free_irqs_and_kthreads(nv_state_t *nv, nv_linux_state_t *nvl)
     /*
      * Free IRQ resources.
      * Matches the three-way branch in nv_shutdown_adapter().
+     *
+     * WBX: Check NV_FLAG_IRQ_ALLOCATED before calling free_irq().
+     * When NV_FLAG_PERSISTENT_SW_STATE is set, request_threaded_irq() is
+     * never called in nv_start_device(), so free_irq() would be spurious.
+     * The flag is set by nv_start_device() after successful IRQ registration.
      */
     if (!(nv->flags & NV_FLAG_USES_MSIX) &&
         !(nv->flags & NV_FLAG_SOC_DISPLAY))
     {
-        free_irq(nv->interrupt_line, (void *)nvl);
+        if (nv->flags & NV_FLAG_IRQ_ALLOCATED)
+        {
+            free_irq(nv->interrupt_line, (void *)nvl);
+            nv->flags &= ~NV_FLAG_IRQ_ALLOCATED;
+        }
         if (nv->flags & NV_FLAG_USES_MSI)
         {
             NV_PCI_DISABLE_MSI(nvl->pci_dev);
@@ -2110,6 +2140,7 @@ void nv_free_irqs_and_kthreads(nv_state_t *nv, nv_linux_state_t *nvl)
     else if (nv->flags & NV_FLAG_SOC_DISPLAY)
     {
         nv_soc_free_irqs(nv);
+        nv->flags &= ~NV_FLAG_IRQ_ALLOCATED;
     }
 #if defined(NV_LINUX_PCIE_MSI_SUPPORTED)
     else
@@ -2117,6 +2148,7 @@ void nv_free_irqs_and_kthreads(nv_state_t *nv, nv_linux_state_t *nvl)
         nv_free_msix_irq(nvl);
         pci_disable_msix(nvl->pci_dev);
         nv->flags &= ~NV_FLAG_USES_MSIX;
+        nv->flags &= ~NV_FLAG_IRQ_ALLOCATED;
         NV_KFREE(nvl->msix_entries,
                  nvl->num_intr * sizeof(struct msix_entry));
         nvl->msix_entries = NULL;
@@ -2151,7 +2183,11 @@ void nv_shutdown_adapter(nvidia_stack_t *sp,
     if (!(nv->flags & NV_FLAG_USES_MSIX) &&
         !(nv->flags & NV_FLAG_SOC_DISPLAY))
     {
-        free_irq(nv->interrupt_line, (void *)nvl);
+        if (nv->flags & NV_FLAG_IRQ_ALLOCATED)
+        {
+            free_irq(nv->interrupt_line, (void *)nvl);
+            nv->flags &= ~NV_FLAG_IRQ_ALLOCATED;
+        }
         if (nv->flags & NV_FLAG_USES_MSI)
         {
             NV_PCI_DISABLE_MSI(nvl->pci_dev);
@@ -2162,6 +2198,7 @@ void nv_shutdown_adapter(nvidia_stack_t *sp,
     else if (nv->flags & NV_FLAG_SOC_DISPLAY)
     {
         nv_soc_free_irqs(nv);
+        nv->flags &= ~NV_FLAG_IRQ_ALLOCATED;
     }
 #if defined(NV_LINUX_PCIE_MSI_SUPPORTED)
     else
@@ -2169,6 +2206,7 @@ void nv_shutdown_adapter(nvidia_stack_t *sp,
         nv_free_msix_irq(nvl);
         pci_disable_msix(nvl->pci_dev);
         nv->flags &= ~NV_FLAG_USES_MSIX;
+        nv->flags &= ~NV_FLAG_IRQ_ALLOCATED;
         NV_KFREE(nvl->msix_entries, nvl->num_intr*sizeof(struct msix_entry));
         NV_KFREE(nvl->irq_count, nvl->num_intr*sizeof(nv_irq_count_info_t));
     }

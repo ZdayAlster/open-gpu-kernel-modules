@@ -320,6 +320,7 @@ int nv_soc_register_irqs(nv_state_t *nv)
         }
     }
 
+    nv->flags |= NV_FLAG_IRQ_ALLOCATED;
     return 0;
 }
 
