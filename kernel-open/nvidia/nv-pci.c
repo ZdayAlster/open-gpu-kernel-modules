@@ -2287,6 +2287,26 @@ nv_pci_remove(struct pci_dev *pci_dev)
     {
         NV_DEV_PRINTF(NV_DBG_WARNINGS, nv,
             "GPU lost/excluded in nv_pci_remove, skipping RM teardown to avoid GSP RPC timeout\n");
+
+        /*
+         * WBX: Clear UVM AER state if this GPU was excluded due to AER.
+         *
+         * During AER error_detected(), nvUvmInterfaceGpuBrokenAerByNv() was called
+         * which sets gpu->broken and increments aer_broken_count. When remove is
+         * triggered manually (sysfs remove), we must clear this state so that:
+         *   1. fatal_error can be cleared via uvm_global_reset_fatal_error_if_rc_error()
+         *   2. /dev/nvidia-uvm can be opened successfully after rescan
+         *   3. Other healthy GPUs are not affected by the stale fatal_error
+         *
+         * This mirrors the logic in nv_pci_error_resume() which clears UVM state
+         * during automatic AER recovery.
+         */
+        if (nv->flags & NV_FLAG_EXCLUDE) {
+            nvUvmInterfaceGpuUnbrokenAerByNv(nv);
+            NV_DEV_PRINTF(NV_DBG_INFO, nv,
+                "Cleared UVM AER state for excluded GPU in nv_pci_remove\n");
+        }
+
         nv_acpi_unregister_notifier(nvl);
     }
     else if ((nv->flags & NV_FLAG_PERSISTENT_SW_STATE) || (nv->flags & NV_FLAG_OPEN))
