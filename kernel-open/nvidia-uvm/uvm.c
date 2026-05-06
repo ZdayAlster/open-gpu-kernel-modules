@@ -144,15 +144,10 @@ err:
 static int uvm_open(struct inode *inode, struct file *filp)
 {
     struct address_space *mapping;
-    // WBX: Don't check uvm_global_get_status() here.
-    // The global fatal_error might be set due to AER race condition,
-    // preventing /dev/nvidia-uvm from being opened even for GPUs
-    // that are not broken.
-    // Per-GPU broken flags are properly maintained and checked when
-    // a GPU is actually used (e.g., in uvm_gpu_is_broken()).
-    // NV_STATUS status = uvm_global_get_status();
-    // if (status != NV_OK)
-    //     return -nv_status_to_errno(status);
+    NV_STATUS status = uvm_global_get_status();
+
+    if (status != NV_OK)
+        return -nv_status_to_errno(status);
 
     mapping = uvm_kvmalloc(sizeof(*mapping));
     if (!mapping)
