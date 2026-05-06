@@ -2358,7 +2358,7 @@ skip_rm_teardown:
     nv->flags &= ~NV_FLAG_OPEN;
 
     /*
-     * WBX: AER recovery reinit gate.
+     * WBX: AER recovery cleanup — clear EXCLUDE and AER_NEEDS_REINIT flags.
      *
      * When an AER fatal error occurs, error_detected() sets NV_FLAG_EXCLUDE.
      * If PCIe slot reset succeeds (hardware link restored), slot_reset()
@@ -2374,6 +2374,16 @@ skip_rm_teardown:
      * If all conditions are met, clear both flags so the next open() will
      * go through nv_start_device() -> rm_init_adapter() -> RmInitAdapter(),
      * which performs a full RM reinitialization including GSP firmware reload.
+     *
+     * NOTE: Do NOT call nvidia_modeset_resume() here. The modeset layer will
+     * be re-initialized automatically through the normal open path in
+     * nv_open_device(). Calling nvidia_modeset_resume() here (after driver
+     * resources have been released in the GPU-lost fast path) would cause a
+     * crash due to accessing freed resources.
+     *
+     * This matches the design in nv_open_device() which also does NOT call
+     * nvidia_modeset_resume() — the modeset is restored through the normal
+     * open flow that calls nv_start_device() -> rm_init_adapter().
      */
     if ((nv->flags & NV_FLAG_EXCLUDE) &&
         (nv->flags & NV_FLAG_AER_NEEDS_REINIT) &&
@@ -2386,21 +2396,9 @@ skip_rm_teardown:
         nv->flags &= ~NV_FLAG_AER_NEEDS_REINIT;
 
         /*
-         * WBX: Re-initialize modeset layer after AER recovery.
-         *
-         * error_detected() called nvidia_modeset_remove_excluded() which
-         * cleared pDevEvo->openedGpuIds[] and set pDevEvo->excluded = NV_TRUE.
-         * Now that all clients have closed and the GPU is present on bus,
-         * we must call nvidia_modeset_resume() to re-initialize the modeset
-         * layer and re-populate openedGpuIds[].
-         *
-         * Without this call, subsequent nvEvoSetDeviceExcluded() calls will
-         * fail with "gpuId 0x%x not found" because openedGpuIds[] is empty.
+         * WBX: Clear UVM broken flag now that GPU is present and
+         * all clients have closed. The next open will re-initialize.
          */
-        nvidia_modeset_resume(nv->gpu_id);
-
-        // WBX: Clear UVM broken flag now that GPU is present and
-        // all clients have closed. The next open will re-initialize.
         nvUvmInterfaceGpuUnbrokenAerByNv(nv);
     }
 

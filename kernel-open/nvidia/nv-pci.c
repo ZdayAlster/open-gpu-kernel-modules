@@ -2923,8 +2923,18 @@ nv_pci_slot_reset(struct pci_dev *pdev)
          * This avoids the scenario where a recovered GPU is permanently
          * excluded even after all CUDA processes have exited, which would
          * otherwise require rmmod or reboot.
+         *
+         * WBX: Also call nvidia_modeset_resume() here to re-initialize
+         * the modeset layer while the GPU is still accessible. This is
+         * safe to call even with stale RM state because NVKMS manages
+         * its own state independently. Without this, subsequent
+         * nvEvoSetDeviceExcluded() calls will fail with "gpuId not found".
+         *
+         * The AER_NEEDS_REINIT flag is still set so that nv_stop_device()
+         * can clear EXCLUDE when all clients close.
          */
         nv->flags |= NV_FLAG_AER_NEEDS_REINIT;
+        nvidia_modeset_resume(nv->gpu_id);
     }
 
     return PCI_ERS_RESULT_RECOVERED;
