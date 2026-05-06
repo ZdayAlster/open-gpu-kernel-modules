@@ -628,6 +628,7 @@ void uvm_gpu_unbroken_aer_entry(const NvProcessorUuid *uuid)
     uvm_parent_gpu_t *parent_gpu;
     NvU32 i;
     bool found = false;
+    NvU32 cleared_count = 0;
 
     uvm_spin_lock_irqsave(&g_uvm_global.gpu_table_lock);
 
@@ -640,6 +641,7 @@ void uvm_gpu_unbroken_aer_entry(const NvProcessorUuid *uuid)
                     if (uvm_gpu_unset_broken(parent_gpu->gpus[j])) {
                         UVM_DBG_PRINT("GPU %s broken flag cleared (AER recovery)\n",
                                      parent_gpu->gpus[j]->name);
+                        cleared_count++;
                     } else {
                         NV_STATUS status = uvm_gpu_get_broken_status(parent_gpu->gpus[j]);
                         if (status != NV_OK) {
@@ -659,6 +661,44 @@ void uvm_gpu_unbroken_aer_entry(const NvProcessorUuid *uuid)
         }
     }
 
+    /*
+     * WBX: Fallback for GPU permanent removal scenario.
+     *
+     * If UUID not found (GPU already removed from UVM GPU table),
+     * we cannot decrement aer_broken_count by UUID. In this case,
+     * decrement by the number of sub-processors (1 for single-GPU).
+     * This handles the scenario where:
+     *   1. AER error_detected() increments aer_broken_count
+     *   2. GPU is permanently removed (e.g., hot-unplug, manual remove)
+     *   3. nv_pci_remove() calls nvUvmInterfaceGpuUnbrokenAerByNv()
+     *   4. GPU already removed from table, UUID not found
+     *
+     * Without this fallback, aer_broken_count would permanently leak,
+     * causing subsequent uvm_global_reset_fatal_error_if_rc_error()
+     * calls to incorrectly clear non-AER fatal_errors.
+     */
+    if (!found)
+    {
+        NvU32 remaining;
+        remaining = atomic_read(&g_uvm_global.aer_broken_count);
+        if (remaining > 0)
+        {
+            /*
+             * Conservative fallback: decrement by 1 for this UUID.
+             * This assumes at least one sub-processor was marked broken.
+             * In practice, a GPU typically has 1 sub-processor (GPC).
+             */
+            atomic_dec(&g_uvm_global.aer_broken_count);
+            UVM_DBG_PRINT("UUID not found in GPU table, decremented aer_broken_count "
+                         "(was %u, now %u)\n",
+                         remaining, remaining - 1);
+        }
+        else
+        {
+            UVM_DBG_PRINT("UUID not found in GPU table, aer_broken_count already 0\n");
+        }
+    }
+
     uvm_spin_unlock_irqrestore(&g_uvm_global.gpu_table_lock);
 
     // WBX: Attempt to clear global fatal_error if it was set due to an AER
@@ -674,7 +714,7 @@ void uvm_gpu_unbroken_aer_entry(const NvProcessorUuid *uuid)
     // protection: it aborts the clear if all AER-broken GPUs have already
     // been unbroken before the fatal_error clear runs (highly unlikely but
     // possible under heavy load).
-    if (found)
+    if (found || (atomic_read(&g_uvm_global.aer_broken_count) == 0))
         uvm_global_reset_fatal_error_if_rc_error();
 }
 

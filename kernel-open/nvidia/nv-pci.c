@@ -2773,16 +2773,26 @@ nv_pci_error_detected(struct pci_dev *pdev, pci_channel_state_t state)
          * Permanent failure - the device cannot be recovered.
          * Mark as excluded and let the kernel disconnect it.
          * The kernel will subsequently call nv_pci_remove().
+         *
+         * WBX: Do NOT call pci_disable_device() or nvUvmInterfaceGpuBrokenAerByNv()
+         * while holding nv_linux_devices_lock. pci_disable_device() may call
+         * pm_runtime_put_sync_autosuspend() which can block, causing potential
+         * deadlock. Also, nvUvmInterfaceGpuBrokenAerByNv() may acquire UVM
+         * locks. Move these outside the critical section for safety.
+         *
+         * First set the EXCLUDE flag under lock to prevent new opens, then
+         * release the lock before performing potentially blocking operations.
          */
         LOCK_NV_LINUX_DEVICES();
         nv->flags |= NV_FLAG_EXCLUDE;
-	    pci_disable_device(pdev);
-
-        /* 通知 UVM 层只标记这张 GPU broken，
-         * 而不是设置全局 fatal_error。
-         * 使用 nv_get_cached_uuid 避免嵌套锁。 */
-        nvUvmInterfaceGpuBrokenAerByNv(nv);
         UNLOCK_NV_LINUX_DEVICES();
+
+        /*
+         * Now perform the potentially blocking operations outside the lock.
+         * This mirrors the pattern used in pci_channel_io_frozen case.
+         */
+        pci_disable_device(pdev);
+        nvUvmInterfaceGpuBrokenAerByNv(nv);
 
         nv_printf(NV_DBG_ERRORS,
                   "NVRM: GPU %04x:%02x:%02x.%x permanent PCI failure, marking as excluded\n",
