@@ -2424,6 +2424,7 @@ void RmShutdownAdapter(
         NvU32 gpuInstance    = gpuGetInstance(pGpu);
         NvU32 deviceInstance = gpuGetDeviceInstance(pGpu);
         OBJSYS         *pSys = SYS_GET_INSTANCE();
+        NvBool bGpuLost = !pGpu->getProperty(pGpu, PDB_PROP_GPU_IS_CONNECTED);
 
         RmUnixFreeRmApi(nv);
 
@@ -2471,33 +2472,49 @@ void RmShutdownAdapter(
                 nvp->flags &= ~NV_INIT_FLAG_FIFO_WATCHDOG;
             }
 
-                rmapiSetDelPendingClientResourcesFromGpuMask(NVBIT(gpuInstance));
-                rmapiDelPendingDevices(NVBIT(gpuInstance));
-
-                os_disable_console_access();
-
-                if (nvp->flags & NV_INIT_FLAG_GPU_STATE_LOAD)
+                if (!bGpuLost)
                 {
-                    rmStatus = gpuStateUnload(pGpu, GPU_STATE_DEFAULT);
-                    NV_ASSERT(rmStatus == NV_OK);
-                }
+                    //
+                    // For a lost GPU (AER / surprise removal) skip these steps:
+                    //   - rmapiDelPendingDevices: frees thousands of orphaned RM
+                    //     client resources; each free invokes engine teardown
+                    //     callbacks that take ~17 ms on dead hardware, totalling
+                    //     minutes for a VLLM workload.
+                    //   - gpuStateUnload/Destroy: engine state unloads that
+                    //     attempt hardware access; with IS_CONNECTED=false most
+                    //     RPCs fast-fail, but some HAL paths (e.g. FWSEC/booter
+                    //     on TU102) still poll hardware for per-operation timeouts.
+                    // gpumgrDetachGpu/DestroyDevice and RmTeardownDeviceDma are
+                    // always called below to prevent a stale pGpu reference.
+                    //
+                    rmapiSetDelPendingClientResourcesFromGpuMask(NVBIT(gpuInstance));
+                    rmapiDelPendingDevices(NVBIT(gpuInstance));
 
-                if (nvp->flags & NV_INIT_FLAG_GPU_STATE)
-                {
-                    rmStatus = gpuStateDestroy(pGpu);
-                    NV_ASSERT(rmStatus == NV_OK);
-                }
+                    os_disable_console_access();
 
-                if (IS_DCE_CLIENT(pGpu))
-                {
-                    rmStatus = dceclientDceRmInit(pGpu, GPU_GET_DCECLIENTRM(pGpu), NV_FALSE);
-                    if (rmStatus != NV_OK)
+                    if (nvp->flags & NV_INIT_FLAG_GPU_STATE_LOAD)
                     {
-                        NV_PRINTF(LEVEL_ERROR, "DCE firmware RM Shutdown failure\n");
+                        rmStatus = gpuStateUnload(pGpu, GPU_STATE_DEFAULT);
+                        NV_ASSERT(rmStatus == NV_OK);
                     }
-                }
 
-                os_enable_console_access();
+                    if (nvp->flags & NV_INIT_FLAG_GPU_STATE)
+                    {
+                        rmStatus = gpuStateDestroy(pGpu);
+                        NV_ASSERT(rmStatus == NV_OK);
+                    }
+
+                    if (IS_DCE_CLIENT(pGpu))
+                    {
+                        rmStatus = dceclientDceRmInit(pGpu, GPU_GET_DCECLIENTRM(pGpu), NV_FALSE);
+                        if (rmStatus != NV_OK)
+                        {
+                            NV_PRINTF(LEVEL_ERROR, "DCE firmware RM Shutdown failure\n");
+                        }
+                    }
+
+                    os_enable_console_access();
+                }
 
                 if (pGpu->getProperty(pGpu, PDB_PROP_GPU_CLKS_IN_TEGRA_SOC))
                 {

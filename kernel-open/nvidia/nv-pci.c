@@ -2261,7 +2261,6 @@ nv_pci_remove(struct pci_dev *pci_dev)
         {
             rm_disable_gpu_state_persistence(sp, nv);
         }
-        nv_printf(NV_DBG_WARNINGS,"dong ---------nv_shutdown_adapter.\n");
         nv_shutdown_adapter(sp, nv, nvl);
         nv_dev_free_stacks(nvl);
     }
@@ -2272,10 +2271,14 @@ nv_pci_remove(struct pci_dev *pci_dev)
          * nv_shutdown_adapter() to avoid GSP RPC timeouts on the dead GPU.
          * IRQ, kthreads, and stacks are already freed by the fast path.
          *
-         * rm_check_for_gpu_surprise_removal() above set IS_CONNECTED=false,
-         * so rm_shutdown_adapter() now completes quickly: all hardware
-         * accesses fast-fail with NV_ERR_GPU_IS_LOST, and Fix 2 in
-         * kgspUnloadRm_IMPL() guards the remaining kgspWaitForProcessorSuspend.
+         * rm_check_for_gpu_surprise_removal() above set IS_CONNECTED=false.
+         * RmShutdownAdapter() has two fast-path guards for the lost-GPU case:
+         *   1. rmapiDelPendingDevices() is skipped (bGpuLost path in osinit.c):
+         *      freeing thousands of orphaned VLLM resources at ~17 ms each on
+         *      dead hardware would take minutes.
+         *   2. kgspTeardown_HAL() is guarded by rpcStatus==NV_OK in
+         *      kgspUnloadRm_IMPL(): FWSEC/booter polling on TU102 dead hardware
+         *      would spin for tens of seconds per operation.
          *
          * Without this call, gpumgrDetachGpu/gpumgrDestroyDevice/
          * RmTeardownDeviceDma are never invoked, leaving a stale pGpu in

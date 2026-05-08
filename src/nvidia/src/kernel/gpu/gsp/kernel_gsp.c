@@ -4142,8 +4142,13 @@ kgspUnloadRm_IMPL
     kgspCollectGspInstrumentation(pGpu, pKernelGsp);
 #endif
 
-    // Teardown remaining GSP state
-    status = kgspTeardown_HAL(pGpu, pKernelGsp, unloadMode);
+    // Skip teardown when GPU is lost: FWSEC/booter hardware polling on dead
+    // hardware would spin for each per-operation timeout (TU102: tens of
+    // seconds) with no forward progress.
+    if (rpcStatus == NV_OK)
+    {
+        status = kgspTeardown_HAL(pGpu, pKernelGsp, unloadMode);
+    }
 
     //
     // To fix boot issue after GPU reset on ESXi config:
