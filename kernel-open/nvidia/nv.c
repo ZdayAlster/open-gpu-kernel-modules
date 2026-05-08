@@ -2087,6 +2087,24 @@ void nv_free_irqs_and_kthreads(nv_state_t *nv, nv_linux_state_t *nvl)
     }
 
     /*
+     * WBX: Stop RC timer in the GPU-lost fast path.
+     *
+     * The RC timer (nvidia_rc_timer_callback) holds a pointer to nvl via
+     * container_of(). If we skip rm_shutdown_adapter() in the GPU-lost path
+     * and the GPU is later removed/reprobed, the old nvl is freed but the
+     * timer remains active. When the timer fires, it dereferences the freed
+     * nvl pointer, causing a use-after-free crash.
+     *
+     * nv_stop_rc_timer() is idempotent (checks nv->rc_timer_enabled), so
+     * it's safe to call even if the timer was never started or already
+     * stopped.
+     */
+    if (nv->rc_timer_enabled)
+    {
+        nv_stop_rc_timer(nv);
+    }
+
+    /*
      * Free msix_bh_mutex (used to serialise MSI-X bottom-half handlers).
      */
     if (nvl->msix_bh_mutex)
