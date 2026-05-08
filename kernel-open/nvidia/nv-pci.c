@@ -2261,8 +2261,30 @@ nv_pci_remove(struct pci_dev *pci_dev)
         {
             rm_disable_gpu_state_persistence(sp, nv);
         }
+        nv_printf(NV_DBG_WARNINGS,"dong ---------nv_shutdown_adapter.\n");
         nv_shutdown_adapter(sp, nv, nvl);
         nv_dev_free_stacks(nvl);
+    }
+    else if (nv->flags & NV_FLAG_EXCLUDE)
+    {
+        /*
+         * AER-excluded GPU: nv_stop_device() took the fast path and skipped
+         * nv_shutdown_adapter() to avoid GSP RPC timeouts on the dead GPU.
+         * IRQ, kthreads, and stacks are already freed by the fast path.
+         *
+         * rm_check_for_gpu_surprise_removal() above set IS_CONNECTED=false,
+         * so rm_shutdown_adapter() now completes quickly: all hardware
+         * accesses fast-fail with NV_ERR_GPU_IS_LOST, and Fix 2 in
+         * kgspUnloadRm_IMPL() guards the remaining kgspWaitForProcessorSuspend.
+         *
+         * Without this call, gpumgrDetachGpu/gpumgrDestroyDevice/
+         * RmTeardownDeviceDma are never invoked, leaving a stale pGpu in
+         * RM's GPU manager with pOsGpuInfo pointing at the about-to-be-freed
+         * nvl.  After multiple AER remove/rescan cycles the stale pGpu
+         * resolves nv->dma_dev = NULL, causing a NULL pointer crash in
+         * nv_dma_map_pages() during the re-probed GPU's fbsrInit.
+         */
+        rm_shutdown_adapter(sp, nv);
     }
 
     if (nvl->sysfs_config_file != NULL)

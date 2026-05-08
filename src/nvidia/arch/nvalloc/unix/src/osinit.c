@@ -2568,6 +2568,17 @@ void RmDisableAdapter(
     NvU32      gpuMask;
     nv_priv_t *nvp  = NV_GET_NV_PRIV(nv);
 
+
+    // AER-excluded GPU: bus is dead. Set disconnected properties NOW so that
+    // _kgspRpcSanityCheck() returns NV_ERR_GPU_IS_LOST immediately instead
+    // of letting each GSP RPC spin to its full ~90s timeout, which would
+    // hold an IRQ-disabling spinlock for 90s and prevent IPI delivery.
+    if ((nv->flags & NV_FLAG_EXCLUDE) &&
+       pGpu->getProperty(pGpu, PDB_PROP_GPU_IS_CONNECTED))
+    {
+        gpuSetDisconnectedProperties(pGpu);
+    }
+
     gpumgrSetCurrentGpuInstance(pGpu->gpuInstance);
 
     //

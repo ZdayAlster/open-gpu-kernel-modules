@@ -2113,7 +2113,6 @@ static void nv_stop_device(nv_state_t *nv, nvidia_stack_t *sp)
             nv->flags |= NV_FLAG_EXCLUDE;
             UNLOCK_NV_LINUX_DEVICES();
         }
-#if 0
         /* Stop kthreads so they no longer attempt to access the lost GPU */
         if (!(nv->flags & NV_FLAG_PERSISTENT_SW_STATE))
         {
@@ -2192,8 +2191,13 @@ static void nv_stop_device(nv_state_t *nv, nvidia_stack_t *sp)
             nvl->msix_bh_mutex = NULL;
         }
 
+	if (nv_platform_use_auto_online(nvl))
+	{
+		 NV_DEV_PRINTF(NV_DBG_WARNINGS, nv,"stop remove_numa_memory_q.\n");
+		nv_kthread_q_stop(&nvl->remove_numa_memory_q);
+	}
+
         goto skip_rm_teardown;
-#endif 
     }
     /*
      * The GPU needs to be powered on to go through the teardown sequence.
@@ -2220,12 +2224,11 @@ static void nv_stop_device(nv_state_t *nv, nvidia_stack_t *sp)
              * is idempotent; the call at skip_rm_teardown is still needed as a
              * safety net for the GPU-lost fast path.
              */
-            nv_stop_rc_timer(nv);
+            //nv_stop_rc_timer(nv);
 
             nv_shutdown_adapter(sp, nv, nvl);
         }
     }
-#if 0
 skip_rm_teardown:
 
     if (!(nv->flags & NV_FLAG_PERSISTENT_SW_STATE))
@@ -2242,10 +2245,10 @@ skip_rm_teardown:
          *     rm_disable_adapter nor nv_shutdown_adapter was called, so the
          *     timer is definitely still armed.
          */
-        //nv_stop_rc_timer(nv);
+        nv_stop_rc_timer(nv);
         nv_dev_free_stacks(nvl);
     }
-#endif 
+    
     if ((nv->flags & NV_FLAG_PERSISTENT_SW_STATE) &&
         (!persistence_mode_notice_logged) && (!os_is_vgx_hyper()))
     {
@@ -2276,7 +2279,6 @@ skip_rm_teardown:
      * go through nv_start_device() -> rm_init_adapter() -> RmInitAdapter(),
      * which performs a full RM reinitialization including GSP firmware reload.
      */
-#if 0
     if ((nv->flags & NV_FLAG_EXCLUDE) &&
         (nv->flags & NV_FLAG_AER_NEEDS_REINIT) &&
         dev_is_pci(nvl->dev) && pci_device_is_present(nvl->pci_dev))
@@ -2287,7 +2289,6 @@ skip_rm_teardown:
         nv->flags &= ~NV_FLAG_EXCLUDE;
         nv->flags &= ~NV_FLAG_AER_NEEDS_REINIT;
     }
-#endif
     if (!(nv->flags & NV_FLAG_PERSISTENT_SW_STATE))
     {
         rm_unref_dynamic_power(sp, nv, NV_DYNAMIC_PM_COARSE);

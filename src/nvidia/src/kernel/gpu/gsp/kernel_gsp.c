@@ -4126,10 +4126,15 @@ kgspUnloadRm_IMPL
         // FIPS: If CC enabled, we need to confirm GSP-RM was able to teardown CC state.
         kgspCheckGspRmCcCleanup_HAL(pGpu, pKernelGsp);
     }
-
-    // Wait for GSP-RM processor to suspend
-    kgspWaitForProcessorSuspend_HAL(pGpu, pKernelGsp);
-
+    
+    // Only wait if the RPC was actually sent. Skip when GPU is lost: the
+    // mailbox register would return 0xFFFFFFFF, making gpuTimeoutCondWait
+    // spin for the full timeout with IRQs disabled
+    if (rpcStatus == NV_OK)
+    {
+    	// Wait for GSP-RM processor to suspend
+    	kgspWaitForProcessorSuspend_HAL(pGpu, pKernelGsp);
+    }
     // Dump GSP-RM logs and reset before proceeding with the rest of teardown
     kgspDumpGspLogs(pKernelGsp, NV_FALSE);
 
