@@ -1639,11 +1639,7 @@ intrServiceStallList_IMPL
     NvBool              bPending;
     CALL_CONTEXT       *pOldContext = NULL;
 
-    // NV_ERR_GPU_IS_LOST is the expected return after AER surprise removal;
-    // do not assert on it, just return silently.
-    status = _intrServiceStallCommonCheckBegin(pGpu, pIntr, &pOldContext);
-    if (status != NV_OK)
-        return;
+    NV_ASSERT_OK_OR_ELSE(status, _intrServiceStallCommonCheckBegin(pGpu, pIntr, &pOldContext), return);
 
     do
     {
@@ -1696,11 +1692,7 @@ intrServiceStallSingle_IMPL
     bitVectorClrAll(&engines);
     bitVectorSet(&engines, engIdx);
 
-    // NV_ERR_GPU_IS_LOST is the expected return after AER surprise removal;
-    // do not assert on it, just return silently.
-    status = _intrServiceStallCommonCheckBegin(pGpu, pIntr, &pOldContext);
-    if (status != NV_OK)
-        return;
+    NV_ASSERT_OK_OR_ELSE(status, _intrServiceStallCommonCheckBegin(pGpu, pIntr, &pOldContext), return);
 
     do
     {
