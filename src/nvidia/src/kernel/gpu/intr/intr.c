@@ -1566,6 +1566,16 @@ _intrServiceStallCommonCheckBegin
         // GPU is recovered.
         //
 
+        // Fast exit: if IS_CONNECTED is already false (AER / prior surprise-
+        // removal detection already ran), skip the hardware register read and
+        // return immediately.  Without this, every queued DPC after an AER
+        // event reads PMC_BOOT_0 (→ 0xFFFFFFFF) and logs a spurious "Failed
+        // GPU reg read" message on each invocation.
+        if (!API_GPU_ATTACHED_SANITY_CHECK(pGpu) || API_GPU_IN_RESET_SANITY_CHECK(pGpu))
+        {
+            return NV_ERR_GPU_IS_LOST;
+        }
+
         NvU32 regReadValue = GPU_REG_RD32(pGpu, NV_PMC_BOOT_0);
 
         if (regReadValue == GPU_REG_VALUE_INVALID)
@@ -1573,12 +1583,6 @@ _intrServiceStallCommonCheckBegin
             NV_PRINTF(LEVEL_ERROR,
                       "Failed GPU reg read : 0x%x. Check whether GPU is present on the bus\n",
                       regReadValue);
-        }
-
-        // Dont service interrupts if GPU is surprise removed
-        if (!API_GPU_ATTACHED_SANITY_CHECK(pGpu) || API_GPU_IN_RESET_SANITY_CHECK(pGpu))
-        {
-            return NV_ERR_GPU_IS_LOST;
         }
     }
 
@@ -1635,7 +1639,11 @@ intrServiceStallList_IMPL
     NvBool              bPending;
     CALL_CONTEXT       *pOldContext = NULL;
 
-    NV_ASSERT_OK_OR_ELSE(status, _intrServiceStallCommonCheckBegin(pGpu, pIntr, &pOldContext), return);
+    // NV_ERR_GPU_IS_LOST is the expected return after AER surprise removal;
+    // do not assert on it, just return silently.
+    status = _intrServiceStallCommonCheckBegin(pGpu, pIntr, &pOldContext);
+    if (status != NV_OK)
+        return;
 
     do
     {
@@ -1688,7 +1696,11 @@ intrServiceStallSingle_IMPL
     bitVectorClrAll(&engines);
     bitVectorSet(&engines, engIdx);
 
-    NV_ASSERT_OK_OR_ELSE(status, _intrServiceStallCommonCheckBegin(pGpu, pIntr, &pOldContext), return);
+    // NV_ERR_GPU_IS_LOST is the expected return after AER surprise removal;
+    // do not assert on it, just return silently.
+    status = _intrServiceStallCommonCheckBegin(pGpu, pIntr, &pOldContext);
+    if (status != NV_OK)
+        return;
 
     do
     {
