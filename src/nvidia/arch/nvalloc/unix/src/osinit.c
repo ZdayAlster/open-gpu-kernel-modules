@@ -2475,17 +2475,16 @@ void RmShutdownAdapter(
                 if (!bGpuLost)
                 {
                     //
-                    // For a lost GPU (AER / surprise removal) skip these steps:
+                    // For a lost GPU (AER / surprise removal) skip:
                     //   - rmapiDelPendingDevices: frees thousands of orphaned RM
                     //     client resources; each free invokes engine teardown
                     //     callbacks that take ~17 ms on dead hardware, totalling
                     //     minutes for a VLLM workload.
-                    //   - gpuStateUnload/Destroy: engine state unloads that
-                    //     attempt hardware access; with IS_CONNECTED=false most
-                    //     RPCs fast-fail, but some HAL paths (e.g. FWSEC/booter
-                    //     on TU102) still poll hardware for per-operation timeouts.
-                    // gpumgrDetachGpu/DestroyDevice and RmTeardownDeviceDma are
-                    // always called below to prevent a stale pGpu reference.
+                    //   - gpuStateUnload: engine hardware teardown; with
+                    //     IS_CONNECTED=false most RPCs fast-fail, but some HAL
+                    //     paths (e.g. FWSEC/booter on TU102) still poll hardware
+                    //     for per-operation timeouts.
+                    // gpuStateDestroy is NOT skipped (see below).
                     //
                     rmapiSetDelPendingClientResourcesFromGpuMask(NVBIT(gpuInstance));
                     rmapiDelPendingDevices(NVBIT(gpuInstance));
@@ -2497,13 +2496,27 @@ void RmShutdownAdapter(
                         rmStatus = gpuStateUnload(pGpu, GPU_STATE_DEFAULT);
                         NV_ASSERT(rmStatus == NV_OK);
                     }
+                }
 
-                    if (nvp->flags & NV_INIT_FLAG_GPU_STATE)
-                    {
-                        rmStatus = gpuStateDestroy(pGpu);
-                        NV_ASSERT(rmStatus == NV_OK);
-                    }
+                //
+                // gpuStateDestroy MUST run even for a lost GPU: it frees the
+                // internal RM engine objects (Device handles) that were
+                // registered in g_resServ during gpuStateLoad.  Skipping it
+                // leaves those handles orphaned; gpuDestruct_IMPL calls
+                // rmapiReportInternalLeakedDevices() which will assert and log
+                // "Internal device object leak" on the next GPU open after an
+                // AER remove/rescan cycle.  gpuStateDestroy is safe to call
+                // without a prior gpuStateUnload: it frees allocated memory and
+                // RM objects rather than issuing hardware commands.
+                //
+                if (nvp->flags & NV_INIT_FLAG_GPU_STATE)
+                {
+                    rmStatus = gpuStateDestroy(pGpu);
+                    NV_ASSERT(rmStatus == NV_OK);
+                }
 
+                if (!bGpuLost)
+                {
                     if (IS_DCE_CLIENT(pGpu))
                     {
                         rmStatus = dceclientDceRmInit(pGpu, GPU_GET_DCECLIENTRM(pGpu), NV_FALSE);
