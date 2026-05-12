@@ -1573,6 +1573,12 @@ _intrServiceStallCommonCheckBegin
         // GPU reg read" message on each invocation.
         if (!API_GPU_ATTACHED_SANITY_CHECK(pGpu) || API_GPU_IN_RESET_SANITY_CHECK(pGpu))
         {
+            NV_PRINTF(LEVEL_INFO,
+                      "GPU%u (%04x:%02x:%02x.0) is lost or in reset, skipping ISR DPC\n",
+                      gpuGetInstance(pGpu),
+                      gpuGetDomain(pGpu),
+                      gpuGetBus(pGpu),
+                      gpuGetDevice(pGpu));
             return NV_ERR_GPU_IS_LOST;
         }
 
