@@ -3568,7 +3568,57 @@ void uvm_pmm_gpu_deinit(uvm_pmm_gpu_t *pmm)
     if (gpu->mem_info.size != 0 && gpu_supports_pma_eviction(gpu))
         nvUvmInterfacePmaUnregisterEvictionCallbacks(pmm->pma);
 
-    // TODO: Bug 1766184: Handle ECC/RC
+    // Bug 1766184: Handle ECC/RC.
+    //
+    // When the GPU is broken (AER fatal / RC error), user processes may still
+    // hold GPU memory allocations whose backing chunks are in ALLOCATED or
+    // IS_SPLIT state.  These chunks have suballoc structures allocated from
+    // chunk_split_cache.  If we do not free those CPU-side structures before
+    // calling deinit_caches(), kmem_cache_destroy() will warn about live
+    // objects and leak the slab cache — one leak per remove/rescan cycle,
+    // eventually causing a crash or OOM.
+    //
+    // When the GPU is broken we cannot do any GPU operations, but we can
+    // forcibly free the CPU-side bookkeeping: recursively release all suballoc
+    // trees and return root chunks to PMA_OWNED state (skipping the actual PMA
+    // free, since the GPU is gone and PMA state will be reset on re-probe).
+    if (uvm_gpu_is_broken(gpu) && pmm->root_chunks.array) {
+        for (i = 0; i < pmm->root_chunks.count; ++i) {
+            uvm_gpu_root_chunk_t *root_chunk = &pmm->root_chunks.array[i];
+            uvm_gpu_chunk_t *chunk = &root_chunk->chunk;
+
+            if (chunk->state == UVM_PMM_GPU_CHUNK_STATE_PMA_OWNED)
+                continue;
+
+            uvm_spin_lock(&pmm->list_lock);
+
+            // Recursively free suballoc structures (CPU-only, no GPU ops).
+            // This mirrors the cleanup path in split_gpu_chunk() on error.
+            if (chunk->suballoc) {
+                uvm_pmm_gpu_chunk_suballoc_t *suballoc = chunk->suballoc;
+                NvU32 num_sub = (NvU32)1 << ilog2(suballoc->allocated +
+                                                   (suballoc->allocated - 1));
+                size_t s;
+
+                for (s = 0; s < num_sub; s++) {
+                    if (suballoc->subchunks[s])
+                        kmem_cache_free(CHUNK_CACHE, suballoc->subchunks[s]);
+                }
+                kmem_cache_free(chunk_split_cache[ilog2(num_sub)].cache, suballoc);
+                chunk->suballoc = NULL;
+            }
+
+            chunk->state = UVM_PMM_GPU_CHUNK_STATE_PMA_OWNED;
+            if (!list_empty(&chunk->list))
+                list_del_init(&chunk->list);
+
+            uvm_spin_unlock(&pmm->list_lock);
+
+            UVM_DBG_PRINT("GPU %s: force-freed broken-GPU chunk[%zu] addr 0x%llx\n",
+                          uvm_gpu_name(gpu), i, chunk->address);
+        }
+    }
+
     for (i = 0; i < ARRAY_SIZE(pmm->free_list); i++) {
         for (j = 0; j < ARRAY_SIZE(pmm->free_list[i]); j++) {
             for (k = 0; k < ARRAY_SIZE(pmm->free_list[i][j]); ++k) {
