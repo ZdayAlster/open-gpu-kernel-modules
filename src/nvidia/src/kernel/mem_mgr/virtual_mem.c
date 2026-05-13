@@ -696,6 +696,26 @@ virtmemDestruct_IMPL
     {
         NV_ASSERT(heapOwner != 0);
 
+        //
+        // When the GPU is lost (AER fatal / surprise removal), the GPU's
+        // virtual address space and page tables are already gone.  Skip the
+        // GPU-side vaspaceFree path (which requires GSP RPC / MMU walk
+        // callbacks) to avoid a NULL dereference via gpuGetRpc() after
+        // KernelGsp has been torn down.  Just release the CPU-side memdesc.
+        //
+        if (pGpu->getProperty(pGpu, PDB_PROP_GPU_IS_LOST))
+        {
+            NV_PRINTF(LEVEL_INFO,
+                      "GPU%u (%04x:%02x:%02x.0) is lost, skipping vaspaceFree "
+                      "for VirtualMemory client: %x hVASpace: %x\n",
+                      gpuGetInstance(pGpu),
+                      gpuGetDomain(pGpu), gpuGetBus(pGpu), gpuGetDevice(pGpu),
+                      RES_GET_CLIENT_HANDLE(pVirtualMemory),
+                      hVASpace);
+            memdescDestroy(pMemDesc);
+            return;
+        }
+
         // Get the relevant information from the client memory info and free it
         status = memmgrFree(pGpu,
                             pMemoryManager,
