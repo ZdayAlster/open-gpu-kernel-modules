@@ -1108,8 +1108,13 @@ gpuSanityCheckRegisterAccess_IMPL
     }
 
     // AER fatal error has frozen MMIO; return immediately without any PCIe transaction.
+    // Mirror what gpuSanityCheckRegRead_IMPL would do: call osHandleGpuLost so that Xid 79
+    // is posted and krcRcAndNotifyAllChannels tears down CUDA channels.  The IS_CONNECTED
+    // guard inside osHandleGpuLost makes this a one-shot operation; subsequent calls return
+    // immediately once the GPU is marked disconnected.
     if (osIsGpuExcluded(pGpu))
     {
+        osHandleGpuLost(pGpu);
         status = NV_ERR_GPU_IS_LOST;
         goto done;
     }

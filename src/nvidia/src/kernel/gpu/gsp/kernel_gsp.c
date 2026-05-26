@@ -416,6 +416,13 @@ _kgspRpcSendMessage
 
     NV_CHECK_OK_OR_RETURN(LEVEL_SILENT, _kgspRpcSanityCheck(pGpu, pKernelGsp, pRpc));
 
+    // AER: MMIO frozen; doorbell write will not reach GSP. Block new sends immediately.
+    if (osIsGpuExcluded(pGpu))
+    {
+        pRpc->bQuietPrints = NV_TRUE;
+        return NV_ERR_GPU_IS_LOST;
+    }
+
     nvStatus = GspMsgQueueSendCommand(pRpc->pMessageQueueInfo, pGpu);
     if (nvStatus != NV_OK)
     {
@@ -2411,7 +2418,7 @@ _kgspRpcRecvPoll
             goto done;
         }
 
-        // 
+        //
         // Today, we will soldier on if GSP times out. This can cause future issues if the action
         // requested never actually occurs.
         // 
