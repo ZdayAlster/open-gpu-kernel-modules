@@ -2472,23 +2472,30 @@ void RmShutdownAdapter(
                 nvp->flags &= ~NV_INIT_FLAG_FIFO_WATCHDOG;
             }
 
+                //
+                // Always free client RM resources (Subdevice/Device objects) before
+                // gpuStateDestroy, even for a lost GPU.  If we skip this step when
+                // bGpuLost=true, any Subdevice still registered with pGpu causes
+                // gpuDestructCoreObjects to assert numSubdeviceBackReferences==0,
+                // and the subsequent null KernelGsp dereference in the Subdevice
+                // destructor triggers a kernel panic.
+                //
+                // The original concern ("~17 ms per resource on dead hardware") is
+                // now addressed: _kgspRpcSendMessage checks osIsGpuExcluded and
+                // returns NV_ERR_GPU_IS_LOST immediately, so Subdevice RPC cleanup
+                // (NV_RM_RPC_FREE) fast-fails without any hardware access or timeout.
+                //
+                rmapiSetDelPendingClientResourcesFromGpuMask(NVBIT(gpuInstance));
+                rmapiDelPendingDevices(NVBIT(gpuInstance));
+
                 if (!bGpuLost)
                 {
                     //
-                    // For a lost GPU (AER / surprise removal) skip:
-                    //   - rmapiDelPendingDevices: frees thousands of orphaned RM
-                    //     client resources; each free invokes engine teardown
-                    //     callbacks that take ~17 ms on dead hardware, totalling
-                    //     minutes for a VLLM workload.
-                    //   - gpuStateUnload: engine hardware teardown; with
-                    //     IS_CONNECTED=false most RPCs fast-fail, but some HAL
-                    //     paths (e.g. FWSEC/booter on TU102) still poll hardware
-                    //     for per-operation timeouts.
-                    // gpuStateDestroy is NOT skipped (see below).
+                    // gpuStateUnload performs engine hardware teardown.  Skip for a
+                    // lost GPU: some HAL paths (e.g. FWSEC/booter on TU102) still
+                    // poll hardware for per-operation timeouts even with
+                    // IS_CONNECTED=false.
                     //
-                    rmapiSetDelPendingClientResourcesFromGpuMask(NVBIT(gpuInstance));
-                    rmapiDelPendingDevices(NVBIT(gpuInstance));
-
                     os_disable_console_access();
 
                     if (nvp->flags & NV_INIT_FLAG_GPU_STATE_LOAD)
