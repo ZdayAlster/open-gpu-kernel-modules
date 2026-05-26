@@ -313,6 +313,13 @@ _kgspRpcSanityCheck(OBJGPU *pGpu, KernelGsp *pKernelGsp, OBJRPC *pRpc)
         NV_PRINTF(LEVEL_INFO, "GPU shutdown, skipping RPC\n");
         return NV_ERR_GPU_IS_LOST;
     }
+    // AER fatal error has frozen MMIO; sending an RPC would hang waiting for GSP response.
+    if (osIsGpuExcluded(pGpu))
+    {
+        NV_PRINTF(LEVEL_INFO, "GPU AER-excluded, skipping RPC\n");
+        pRpc->bQuietPrints = NV_TRUE;
+        return NV_ERR_GPU_IS_LOST;
+    }
     if (!gpuIsGpuFullPowerForPmResume(pGpu))
     {
         NV_PRINTF(LEVEL_INFO, "GPU not full power, skipping RPC\n");
@@ -2362,6 +2369,14 @@ _kgspRpcRecvPoll
 
     for (;;)
     {
+        // AER has frozen MMIO; exit immediately instead of polling to the ~110s timeout.
+        if (osIsGpuExcluded(pGpu))
+        {
+            NV_PRINTF(LEVEL_INFO, "GPU AER-excluded, aborting RPC poll\n");
+            rpcStatus = NV_ERR_GPU_IS_LOST;
+            goto done;
+        }
+
         //
         // Check for GPU timeout, save that information, and then verify if the RPC is completed.
         // Otherwise if the CPU thread goes to sleep immediately after the RPC check, it may result in hitting a timeout.

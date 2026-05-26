@@ -1107,6 +1107,13 @@ gpuSanityCheckRegisterAccess_IMPL
         goto done;
     }
 
+    // AER fatal error has frozen MMIO; return immediately without any PCIe transaction.
+    if (osIsGpuExcluded(pGpu))
+    {
+        status = NV_ERR_GPU_IS_LOST;
+        goto done;
+    }
+
     if ((status = gpuSanityCheckVirtRegAccess_HAL(pGpu, addr)) != NV_OK)
     {
         NV_PRINTF(LEVEL_ERROR, "Invalid register access on VF, addr: 0x%x\n", addr);
