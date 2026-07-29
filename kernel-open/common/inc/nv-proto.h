@@ -87,6 +87,7 @@ NV_STATUS     nv_parse_per_device_option_string(nvidia_stack_t *sp);
 nv_linux_state_t * find_uuid(const NvU8 *uuid);
 void          nv_report_error(struct pci_dev *dev, NvU32 error_number, const char *format, va_list ap);
 void          nv_shutdown_adapter(nvidia_stack_t *, nv_state_t *, nv_linux_state_t *);
+void          nv_teardown_irq_and_bh(nv_state_t *, nv_linux_state_t *);
 void          nv_dev_free_stacks(nv_linux_state_t *);
 NvBool        nv_lock_init_locks(nvidia_stack_t *, nv_state_t *);
 void          nv_lock_destroy_locks(nvidia_stack_t *, nv_state_t *);

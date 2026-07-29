@@ -1303,6 +1303,16 @@ typedef struct nv_linux_state_s {
     /* Lock for unlocked bottom half protecting common allocated stack */
     void *isr_bh_unlocked_mutex;
 
+    /*
+     * Set once request_threaded_irq()/nv_request_msix_irq()/nv_soc_register_irqs()
+     * has succeeded; cleared by nv_teardown_irq_and_bh().  The legacy INTx case
+     * has no NV_FLAG_USES_* bit to test, so without this every teardown path
+     * would issue free_irq() unconditionally -- which is how the AER fast path
+     * and nv_shutdown_adapter() ended up double-freeing the IRQ in persistence
+     * mode.
+     */
+    NvBool irq_requested;
+
     NvBool tce_bypass_enabled;
 
     NvU32 num_intr;

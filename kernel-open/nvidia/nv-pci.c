@@ -2313,49 +2313,22 @@ nv_pci_remove(struct pci_dev *pci_dev)
     num_nv_devices--;
 
     /*
-     * WBX: Safety net for MSI IRQ leak.
+     * WBX: Safety net for the MSI IRQ leak.
      *
-     * Normally MSI vectors are freed in nv_shutdown_adapter() (called from
-     * nv_stop_device on last close, or directly here when OPEN/PERSISTENT).
-     * However, in the AER-excluded path:
-     *   1. nv_stop_device() skips nv_shutdown_adapter() to avoid GSP RPC timeout
-     *      (GPU-lost fast path) — but now frees MSI before skip_rm_teardown.
-     *   2. If no client ever opened the GPU (usage_count stayed 0), neither
-     *      nv_stop_device nor nv_shutdown_adapter was ever called.
+     * Normally the interrupt-side resources are released by
+     * nv_shutdown_adapter(), reached either from nv_stop_device() on last
+     * close or directly above when the device was OPEN/PERSISTENT.  Neither
+     * runs when an AER-excluded GPU was never opened by any client
+     * (usage_count stayed 0), which leaves MSI descriptors mapped in the
+     * kernel's irq_domain; the next rescan then warns about active mappings
+     * and /proc/interrupts later GPFs on the stale irq_desc.
      *
-     * As a safety net, check if MSI/MSI-X vectors are still allocated and
-     * free them here.  free_irq() is idempotent-safe if already freed (returns
-     * -EINVAL), and pci_disable_msix()/NV_PCI_DISABLE_MSI() are no-ops if
-     * MSI was already torn down.  This runs before NV_PCI_DISABLE_DEVICE so
-     * the PCI device is still in a state where the kernel can clean up its
-     * irq_domain mappings.
+     * nv_teardown_irq_and_bh() is idempotent, so calling it here costs nothing
+     * on the paths that already released.  It must run before
+     * NV_PCI_DISABLE_DEVICE so the PCI device is still in a state where the
+     * kernel can clean up its irq_domain mappings.
      */
-    if (nv->flags & NV_FLAG_USES_MSI)
-    {
-        free_irq(nv->interrupt_line, (void *)nvl);
-        NV_PCI_DISABLE_MSI(pci_dev);
-        nv->flags &= ~NV_FLAG_USES_MSI;
-        if (nvl->irq_count)
-        {
-            NV_KFREE(nvl->irq_count,
-                     nvl->num_intr * sizeof(nv_irq_count_info_t));
-            nvl->irq_count = NULL;
-        }
-    }
-#if defined(NV_LINUX_PCIE_MSI_SUPPORTED)
-    else if (nv->flags & NV_FLAG_USES_MSIX)
-    {
-        nv_free_msix_irq(nvl);
-        pci_disable_msix(pci_dev);
-        nv->flags &= ~NV_FLAG_USES_MSIX;
-        NV_KFREE(nvl->msix_entries,
-                 nvl->num_intr * sizeof(struct msix_entry));
-        nvl->msix_entries = NULL;
-        NV_KFREE(nvl->irq_count,
-                 nvl->num_intr * sizeof(nv_irq_count_info_t));
-        nvl->irq_count = NULL;
-    }
-#endif
+    nv_teardown_irq_and_bh(nv, nvl);
 
     if (atomic64_read(&nvl->usage_count) == 0)
     {
@@ -2812,92 +2785,34 @@ nv_pci_mmio_enabled(struct pci_dev *pdev)
 static pci_ers_result_t
 nv_pci_slot_reset(struct pci_dev *pdev)
 {
-    nv_linux_state_t *nvl = pci_get_drvdata(pdev);
-    nv_state_t *nv;
-        
-    return PCI_ERS_RESULT_DISCONNECT;
-
-    if (!nvl)
-    {
-        return PCI_ERS_RESULT_DISCONNECT;
-    }
-
-    nv = NV_STATE_PTR(nvl);
-
-    nv_printf(NV_DBG_INFO,
-              "NVRM: PCI slot reset completed for GPU %04x:%02x:%02x.%x\n",
+    /*
+     * This component does not attempt in-place AER recovery.
+     *
+     * Reporting DISCONNECT tells the kernel to stop the recovery sequence and
+     * leave the device disconnected.  The GPU stays NV_FLAG_EXCLUDE until it is
+     * taken through a sysfs remove + rescan, which re-probes it from scratch
+     * (nv_pci_remove() -> rm_shutdown_adapter(), then nv_pci_probe()).  That is
+     * the only path that rebuilds RM and GSP state, and it is what the AER test
+     * suite drives.
+     *
+     * A full recovery implementation used to live here but was unreachable: the
+     * function opened with an unconditional return, so pci_enable_device(),
+     * nvidia_modeset_remove_excluded(), nvUvmInterfaceGpuBrokenAerByNv(nv, NV_OK)
+     * and NV_FLAG_AER_NEEDS_REINIT were all dead code.  It was also unsound --
+     * clearing the UVM broken flag went through uvm_gpu_set_broken(gpu, NV_OK),
+     * which trips UVM_ASSERT(error != NV_OK), and uvm_gpu_set_broken()'s
+     * atomic_cmpxchg() cannot clear the flag anyway.  Reinstating automatic
+     * recovery requires a real uvm_gpu_clear_broken() first; until then, keeping
+     * unverified dead code here only invites bugs like the one that left
+     * nv_drm_remove_excluded() silently unlinking a live DRM device.
+     */
+    nv_printf(NV_DBG_ERRORS,
+              "NVRM: GPU %04x:%02x:%02x.%x slot reset: no in-place recovery, "
+              "device stays excluded until remove/rescan\n",
               NV_PCI_DOMAIN_NUMBER(pdev), NV_PCI_BUS_NUMBER(pdev),
               NV_PCI_SLOT_NUMBER(pdev), PCI_FUNC(pdev->devfn));
 
-    /*
-     * The kernel has performed a slot/bus reset and restored the device.
-     * Verify the device is actually back on the bus.
-     */
-    if (!pci_device_is_present(pdev))
-    {
-        nv_printf(NV_DBG_ERRORS,
-                  "NVRM: GPU %04x:%02x:%02x.%x not present after slot reset\n",
-                  NV_PCI_DOMAIN_NUMBER(pdev), NV_PCI_BUS_NUMBER(pdev),
-                  NV_PCI_SLOT_NUMBER(pdev), PCI_FUNC(pdev->devfn));
-        return PCI_ERS_RESULT_DISCONNECT;
-    }
-
-    /*
-     * Re-enable the device and restore PCI configuration space.
-     * If this fails, the device is permanently broken.
-     */
-    if (pci_enable_device(pdev) != 0)
-    {
-        nv_printf(NV_DBG_ERRORS,
-                  "NVRM: Failed to re-enable GPU %04x:%02x:%02x.%x after slot reset\n",
-                  NV_PCI_DOMAIN_NUMBER(pdev), NV_PCI_BUS_NUMBER(pdev),
-                  NV_PCI_SLOT_NUMBER(pdev), PCI_FUNC(pdev->devfn));
-        return PCI_ERS_RESULT_DISCONNECT;
-    }
-
-    pci_set_master(pdev);
-
-    nvidia_modeset_remove_excluded(nv->gpu_id);
-    nvUvmInterfaceGpuBrokenAerByNv(nv, NV_OK);
-
-    /*
-     * Clear the EXCLUDE flag so the GPU can be used again.
-     * Note: if the device was open (NV_FLAG_OPEN) before the error,
-     * existing clients may still have stale state. The safest approach
-     * is to keep it excluded until those clients close and reopen,
-     * then nv_open_device -> nv_start_device -> rm_init_adapter
-     * will reinitialize the RM state cleanly.
-     */
-    if (!(nv->flags & NV_FLAG_OPEN))
-    {
-        nv_printf(NV_DBG_INFO,
-                  "NVRM: GPU %04x:%02x:%02x.%x recovered successfully, re-enabling\n",
-                  NV_PCI_DOMAIN_NUMBER(pdev), NV_PCI_BUS_NUMBER(pdev),
-                  NV_PCI_SLOT_NUMBER(pdev), PCI_FUNC(pdev->devfn));
-        nv->flags &= ~NV_FLAG_EXCLUDE;
-    }
-    else
-    {
-        nv_printf(NV_DBG_WARNINGS,
-                  "NVRM: GPU %04x:%02x:%02x.%x recovered but was in use, "
-                  "marking for reinit after clients close\n",
-                  NV_PCI_DOMAIN_NUMBER(pdev), NV_PCI_BUS_NUMBER(pdev),
-                  NV_PCI_SLOT_NUMBER(pdev), PCI_FUNC(pdev->devfn));
-
-        /*
-         * WBX: PCIe link has recovered, but the GPU has open clients with
-         * stale state. We cannot reinitialize RM now because clients hold
-         * references. Set AER_NEEDS_REINIT so nv_stop_device() can detect
-         * this and clear EXCLUDE when the last client closes.
-         *
-         * This avoids the scenario where a recovered GPU is permanently
-         * excluded even after all CUDA processes have exited, which would
-         * otherwise require rmmod or reboot.
-         */
-        nv->flags |= NV_FLAG_AER_NEEDS_REINIT;
-    }
-
-    return PCI_ERS_RESULT_RECOVERED;
+    return PCI_ERS_RESULT_DISCONNECT;
 }
 
 static void

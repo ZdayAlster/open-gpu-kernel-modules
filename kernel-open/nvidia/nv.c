@@ -1341,6 +1341,100 @@ nv_schedule_uvm_resume_p2p(NvU8 *pUuid)
 }
 
 /*
+ * Release every interrupt-side OS resource owned by this device.
+ *
+ * Idempotent by construction: each release is gated on the state bit its
+ * acquisition sets, and every one of those bits is cleared here.  Safe to call
+ * from a path that never requested an IRQ, and safe to call twice.
+ *
+ * This exists because the same teardown used to be open-coded in three places
+ * (the nv_start_device() rollback, nv_shutdown_adapter(), and the AER
+ * GPU-lost fast path in nv_stop_device()) with inconsistent "already released"
+ * predicates.  Two bugs came out of that:
+ *   - isr_bh_unlocked_mutex was freed by nv_shutdown_adapter() only, so the
+ *     AER fast path leaked one mutex per isolate/recover cycle;
+ *   - the fast path's free_irq() was not gated on NV_FLAG_PERSISTENT_SW_STATE
+ *     while nv_pci_remove() still ran nv_shutdown_adapter() for a persistent
+ *     device, producing "Trying to free already-free IRQ" plus a Call Trace.
+ *
+ * Only kernel interrupt bookkeeping is touched (irq_desc, irq_domain, MSI
+ * descriptors) -- never a GPU register -- so this is valid on a GPU that has
+ * fallen off the bus.  Ordering follows the original nv_shutdown_adapter()
+ * sequence: stop the bottom halves first, so nothing can still be holding
+ * isr_bh_unlocked_mutex or msix_bh_mutex when they are freed.
+ */
+void nv_teardown_irq_and_bh(nv_state_t *nv, nv_linux_state_t *nvl)
+{
+    /* Safe to call even if the queue was never initialized. */
+    nv_kthread_q_stop(&nvl->bottom_half_q);
+
+    if (nv->queue != NULL)
+    {
+        nv->queue = NULL;
+        nv_kthread_q_stop(&nvl->queue.nvk);
+    }
+
+    if (nvl->isr_bh_unlocked_mutex)
+    {
+        os_free_mutex(nvl->isr_bh_unlocked_mutex);
+        nvl->isr_bh_unlocked_mutex = NULL;
+    }
+
+    if (nvl->irq_requested)
+    {
+        if (nv->flags & NV_FLAG_SOC_DISPLAY)
+        {
+            nv_soc_free_irqs(nv);
+        }
+#if defined(NV_LINUX_PCIE_MSI_SUPPORTED)
+        else if (nv->flags & NV_FLAG_USES_MSIX)
+        {
+            nv_free_msix_irq(nvl);
+        }
+#endif
+        else
+        {
+            free_irq(nv->interrupt_line, (void *)nvl);
+        }
+
+        nvl->irq_requested = NV_FALSE;
+    }
+
+#if defined(NV_LINUX_PCIE_MSI_SUPPORTED)
+    if (nv->flags & NV_FLAG_USES_MSIX)
+    {
+        pci_disable_msix(nvl->pci_dev);
+        nv->flags &= ~NV_FLAG_USES_MSIX;
+
+        if (nvl->msix_entries)
+        {
+            NV_KFREE(nvl->msix_entries,
+                     nvl->num_intr * sizeof(struct msix_entry));
+            nvl->msix_entries = NULL;
+        }
+    }
+    else
+#endif
+    if (nv->flags & NV_FLAG_USES_MSI)
+    {
+        NV_PCI_DISABLE_MSI(nvl->pci_dev);
+        nv->flags &= ~NV_FLAG_USES_MSI;
+    }
+
+    if (nvl->irq_count)
+    {
+        NV_KFREE(nvl->irq_count, nvl->num_intr * sizeof(nv_irq_count_info_t));
+        nvl->irq_count = NULL;
+    }
+
+    if (nvl->msix_bh_mutex)
+    {
+        os_free_mutex(nvl->msix_bh_mutex);
+        nvl->msix_bh_mutex = NULL;
+    }
+}
+
+/*
  * Brings up the device on the first file open. Assumes nvl->ldata_lock is held.
  */
 static int nv_start_device(nv_state_t *nv, nvidia_stack_t *sp)
@@ -1464,6 +1558,16 @@ static int nv_start_device(nv_state_t *nv, nvidia_stack_t *sp)
         goto failed;
     }
 
+    /*
+     * Record that this device now owns a requested IRQ.  Under
+     * NV_FLAG_PERSISTENT_SW_STATE nothing was requested above (the IRQ from the
+     * device's first open is still held), so the flag must not be set here.
+     */
+    if (!(nv->flags & NV_FLAG_PERSISTENT_SW_STATE))
+    {
+        nvl->irq_requested = NV_TRUE;
+    }
+
     if (!(nv->flags & NV_FLAG_PERSISTENT_SW_STATE))
     {
         rc = os_alloc_mutex(&nvl->isr_bh_unlocked_mutex);
@@ -1523,6 +1627,13 @@ static int nv_start_device(nv_state_t *nv, nvidia_stack_t *sp)
     return 0;
 
 failed_release_irq:
+    /*
+     * Deliberately not routed through nv_teardown_irq_and_bh(): under
+     * NV_FLAG_PERSISTENT_SW_STATE this function allocated nothing, and the IRQ,
+     * kthreads and mutexes still belong to the live persistent device.  The
+     * helper releases unconditionally, so using it here would tear down a
+     * device that is still in service.  Keep the guarded, open-coded rollback.
+     */
     if (!(nv->flags & NV_FLAG_PERSISTENT_SW_STATE))
     {
         if (!(nv->flags & NV_FLAG_USES_MSIX) &&
@@ -1540,23 +1651,35 @@ failed_release_irq:
             nv_free_msix_irq(nvl);
         }
 #endif
+        nvl->irq_requested = NV_FALSE;
     }
 
 failed:
 #if defined(NV_LINUX_PCIE_MSI_SUPPORTED)
+    /*
+     * NULL these out after freeing: nvl outlives a failed nv_start_device(),
+     * and nv_teardown_irq_and_bh() keys off the pointers being non-NULL.
+     * Leaving them dangling here would turn a failed open followed by
+     * nv_pci_remove() into a double free.
+     */
     if (nv->flags & NV_FLAG_USES_MSI)
     {
         nv->flags &= ~NV_FLAG_USES_MSI;
         NV_PCI_DISABLE_MSI(nvl->pci_dev);
         if(nvl->irq_count)
+        {
             NV_KFREE(nvl->irq_count, nvl->num_intr * sizeof(nv_irq_count_info_t));
+            nvl->irq_count = NULL;
+        }
     }
     else if (nv->flags & NV_FLAG_USES_MSIX)
     {
         nv->flags &= ~NV_FLAG_USES_MSIX;
         pci_disable_msix(nvl->pci_dev);
         NV_KFREE(nvl->irq_count, nvl->num_intr*sizeof(nv_irq_count_info_t));
+        nvl->irq_count = NULL;
         NV_KFREE(nvl->msix_entries, nvl->num_intr*sizeof(struct msix_entry));
+        nvl->msix_entries = NULL;
     }
 
     if (nvl->msix_bh_mutex)
@@ -1982,52 +2105,7 @@ void nv_shutdown_adapter(nvidia_stack_t *sp,
 {
     rm_disable_adapter(sp, nv);
 
-    // It's safe to call nv_kthread_q_stop even if queue is not initialized
-    nv_kthread_q_stop(&nvl->bottom_half_q);
-
-    if (nv->queue != NULL)
-    {
-        nv->queue = NULL;
-        nv_kthread_q_stop(&nvl->queue.nvk);
-    }
-
-    if (nvl->isr_bh_unlocked_mutex)
-    {
-        os_free_mutex(nvl->isr_bh_unlocked_mutex);
-        nvl->isr_bh_unlocked_mutex = NULL;
-    }
-
-    if (!(nv->flags & NV_FLAG_USES_MSIX) &&
-        !(nv->flags & NV_FLAG_SOC_DISPLAY))
-    {
-        free_irq(nv->interrupt_line, (void *)nvl);
-        if (nv->flags & NV_FLAG_USES_MSI)
-        {
-            NV_PCI_DISABLE_MSI(nvl->pci_dev);
-            if(nvl->irq_count)
-                NV_KFREE(nvl->irq_count, nvl->num_intr * sizeof(nv_irq_count_info_t));
-        }
-    }
-    else if (nv->flags & NV_FLAG_SOC_DISPLAY)
-    {
-        nv_soc_free_irqs(nv);
-    }
-#if defined(NV_LINUX_PCIE_MSI_SUPPORTED)
-    else
-    {
-        nv_free_msix_irq(nvl);
-        pci_disable_msix(nvl->pci_dev);
-        nv->flags &= ~NV_FLAG_USES_MSIX;
-        NV_KFREE(nvl->msix_entries, nvl->num_intr*sizeof(struct msix_entry));
-        NV_KFREE(nvl->irq_count, nvl->num_intr*sizeof(nv_irq_count_info_t));
-    }
-#endif
-
-    if (nvl->msix_bh_mutex)
-    {
-        os_free_mutex(nvl->msix_bh_mutex);
-        nvl->msix_bh_mutex = NULL;
-    }
+    nv_teardown_irq_and_bh(nv, nvl);
 
     rm_shutdown_adapter(sp, nv);
 
@@ -2113,89 +2191,36 @@ static void nv_stop_device(nv_state_t *nv, nvidia_stack_t *sp)
             nv->flags |= NV_FLAG_EXCLUDE;
             UNLOCK_NV_LINUX_DEVICES();
         }
-        /* Stop kthreads so they no longer attempt to access the lost GPU */
+        /*
+         * Release the interrupt-side resources here rather than leaving them to
+         * nv_shutdown_adapter(), which we are about to skip.  Stale MSI
+         * irq_desc entries are the one class of leak that escapes the driver:
+         * they trip "irq_domain_remove with active mappings" on the next
+         * rescan and then GPF inside show_interrupts() when /proc/interrupts
+         * is read.
+         *
+         * nv_teardown_irq_and_bh() only manipulates kernel interrupt
+         * bookkeeping (irq_desc, irq_domain, MSI descriptors) and never reads
+         * back a GPU register -- the MSI address/data is written by the kernel
+         * during request_irq() -- so it is safe on a GPU that is off the bus.
+         *
+         * Under NV_FLAG_PERSISTENT_SW_STATE the device stays initialized and
+         * nv_pci_remove() will run nv_shutdown_adapter() for it, so ownership
+         * of these resources stays there.  Releasing them here as well is what
+         * produced "Trying to free already-free IRQ" and its Call Trace, which
+         * the AER test suite scores as a fatal kernel signature.
+         */
         if (!(nv->flags & NV_FLAG_PERSISTENT_SW_STATE))
         {
             nv_acpi_unregister_notifier(nvl);
-            nv_kthread_q_stop(&nvl->bottom_half_q);
-            if (nv->queue != NULL)
-            {
-                nv->queue = NULL;
-                nv_kthread_q_stop(&nvl->queue.nvk);
-            }
+            nv_teardown_irq_and_bh(nv, nvl);
         }
 
-        /*
-         * WBX: Free MSI/MSI-X interrupt vectors even though we skip RM teardown.
-         *
-         * Without this, after an AER-injected GPU is excluded and clients exit,
-         * the MSI irq_desc entries remain mapped in the kernel's irq_domain.
-         * A subsequent sysfs remove + rescan triggers:
-         *   WARNING: irq_domain_remove with active mappings
-         *   WARNING: msi_device_data_release with stale MSI descriptors
-         * The leaked/stale irq_desc is later accessed by show_interrupts()
-         * (via /proc/interrupts), hitting freed SLUB memory and causing a
-         * kernel panic (page fault at address 0x1000).
-         *
-         * free_irq() and pci_disable_msix()/NV_PCI_DISABLE_MSI() are safe
-         * to call on a lost GPU — they only manipulate the kernel's interrupt
-         * bookkeeping (irq_desc, irq_domain, MSI descriptors) and do not
-         * touch GPU hardware registers. The MSI address/data is written by
-         * the kernel during request_irq(), not read back during free_irq().
-         */
-        if (!(nv->flags & NV_FLAG_USES_MSIX) &&
-            !(nv->flags & NV_FLAG_SOC_DISPLAY))
+        if (nv_platform_use_auto_online(nvl))
         {
-            free_irq(nv->interrupt_line, (void *)nvl);
-            if (nv->flags & NV_FLAG_USES_MSI)
-            {
-                NV_PCI_DISABLE_MSI(nvl->pci_dev);
-		/*
-                 * Clear NV_FLAG_USES_MSI and NULL irq_count so the safety
-                 * net in nv_pci_remove() skips this block and does not
-                 * double-free irq_count, which would corrupt SLUB and cause
-                 * a kernel panic during the subsequent rescan + nvidia-smi.
-                 */
-                nv->flags &= ~NV_FLAG_USES_MSI;
-
-                if (nvl->irq_count)
-                {
-                    NV_KFREE(nvl->irq_count,
-                             nvl->num_intr * sizeof(nv_irq_count_info_t));
-		    nvl->irq_count = NULL;
-                }
-            }
+            NV_DEV_PRINTF(NV_DBG_WARNINGS, nv, "stop remove_numa_memory_q.\n");
+            nv_kthread_q_stop(&nvl->remove_numa_memory_q);
         }
-        else if (nv->flags & NV_FLAG_SOC_DISPLAY)
-        {
-            nv_soc_free_irqs(nv);
-        }
-#if defined(NV_LINUX_PCIE_MSI_SUPPORTED)
-        else
-        {
-            nv_free_msix_irq(nvl);
-            pci_disable_msix(nvl->pci_dev);
-            nv->flags &= ~NV_FLAG_USES_MSIX;
-            NV_KFREE(nvl->msix_entries,
-                     nvl->num_intr * sizeof(struct msix_entry));
-	    nvl->msix_entries = NULL;
-            NV_KFREE(nvl->irq_count,
-                     nvl->num_intr * sizeof(nv_irq_count_info_t));
-	    nvl->irq_count = NULL;
-        }
-#endif
-
-        if (nvl->msix_bh_mutex)
-        {
-            os_free_mutex(nvl->msix_bh_mutex);
-            nvl->msix_bh_mutex = NULL;
-        }
-
-	if (nv_platform_use_auto_online(nvl))
-	{
-		 NV_DEV_PRINTF(NV_DBG_WARNINGS, nv,"stop remove_numa_memory_q.\n");
-		nv_kthread_q_stop(&nvl->remove_numa_memory_q);
-	}
 
         goto skip_rm_teardown;
     }
@@ -2262,33 +2287,18 @@ skip_rm_teardown:
     nv->flags &= ~NV_FLAG_OPEN;
 
     /*
-     * WBX: AER recovery reinit gate.
+     * NV_FLAG_EXCLUDE is deliberately not cleared here.  This component does
+     * not attempt in-place AER recovery: nv_pci_slot_reset() always reports
+     * PCI_ERS_RESULT_DISCONNECT, so an isolated GPU stays excluded until it is
+     * taken through a sysfs remove + rescan, which re-probes it from scratch.
      *
-     * When an AER fatal error occurs, error_detected() sets NV_FLAG_EXCLUDE.
-     * If PCIe slot reset succeeds (hardware link restored), slot_reset()
-     * sets NV_FLAG_AER_NEEDS_REINIT for in-use GPUs instead of keeping
-     * EXCLUDE permanently.
-     *
-     * Now that all clients have closed (usage_count reached 0, NV_FLAG_OPEN
-     * just cleared above), check if the GPU can be returned to service:
-     *   - EXCLUDE must be set (we are in the AER recovery path)
-     *   - AER_NEEDS_REINIT must be set (PCIe slot reset succeeded)
-     *   - GPU must be physically present (pci_device_is_present)
-     *
-     * If all conditions are met, clear both flags so the next open() will
-     * go through nv_start_device() -> rm_init_adapter() -> RmInitAdapter(),
-     * which performs a full RM reinitialization including GSP firmware reload.
+     * A reinit gate keyed on NV_FLAG_AER_NEEDS_REINIT used to live here.  It
+     * was unreachable -- nothing ever set that flag once slot_reset started
+     * short-circuiting -- and clearing EXCLUDE on a GPU whose RM state was
+     * never rebuilt would readmit it with stale state.  Removed along with the
+     * rest of the recovery path.
      */
-    if ((nv->flags & NV_FLAG_EXCLUDE) &&
-        (nv->flags & NV_FLAG_AER_NEEDS_REINIT) &&
-        dev_is_pci(nvl->dev) && pci_device_is_present(nvl->pci_dev))
-    {
-        nv_printf(NV_DBG_WARNINGS,
-            "AER recovered: all clients closed, GPU present on bus, "
-            "clearing EXCLUDE for reinit on next open\n");
-        nv->flags &= ~NV_FLAG_EXCLUDE;
-        nv->flags &= ~NV_FLAG_AER_NEEDS_REINIT;
-    }
+
     if (!(nv->flags & NV_FLAG_PERSISTENT_SW_STATE))
     {
         rm_unref_dynamic_power(sp, nv, NV_DYNAMIC_PM_COARSE);
