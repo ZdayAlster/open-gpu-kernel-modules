@@ -844,12 +844,14 @@ static int nv_drm_dev_load(struct drm_device *dev)
  * nv_drm_dev_unload - tear down DRM device resources.
  *
  * @gpu_excluded: if true, the GPU has been marked excluded due to a fatal PCIe
- *   error (AER).  In this case the GPU is no longer accessible via MMIO, so
- *   any operation that would issue a GSP RPC (declareEventInterest,
- *   freeDevice, releaseOwnership, drm_atomic_helper_shutdown) is skipped to
- *   avoid an indefinite hang waiting for a response that will never arrive.
- *   The NVKMS / RM objects will be cleaned up later when the driver is
- *   unloaded or the device is re-probed.
+ *   error (AER).  In this case the GPU is no longer accessible via MMIO, so the
+ *   three operations that would issue a GSP RPC *and wait for it* --
+ *   declareEventInterest(), releaseOwnership() and drm_atomic_helper_shutdown()
+ *   -- are skipped to avoid an indefinite hang.
+ *
+ *   Everything else is torn down normally.  In particular the NVKMS device is
+ *   still released, via freeDeviceExcluded() instead of freeDevice(); see the
+ *   comment at that call site for why skipping it is not a benign leak.
  */
 static void nv_drm_dev_unload(struct drm_device *dev, bool gpu_excluded)
 {
