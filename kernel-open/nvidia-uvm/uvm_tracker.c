@@ -313,7 +313,12 @@ static NV_STATUS wait_for_entry_with_spin(uvm_tracker_entry_t *tracker_entry, uv
     }
 
     if (status != NV_OK) {
-        UVM_ASSERT(status == uvm_global_get_status());
+        // WBX/AER: status may also originate from a per-GPU broken flag (see
+        // uvm_tracker_check_errors). That path deliberately does not set the
+        // global status, so it need not match uvm_global_get_status() here.
+        // uvm_gpu_set_broken() is only ever called with NV_ERR_RC_ERROR
+        // (nv_pci_error_detected in nv-pci.c).
+        UVM_ASSERT(status == uvm_global_get_status() || status == NV_ERR_RC_ERROR);
         tracker_entry->channel = NULL;
         tracker_entry->value = 0;
     }
@@ -342,7 +347,12 @@ NV_STATUS uvm_tracker_wait(uvm_tracker_t *tracker)
     }
 
     if (status != NV_OK) {
-        UVM_ASSERT(status == uvm_global_get_status());
+        // WBX/AER: status may also originate from a per-GPU broken flag (see
+        // uvm_tracker_check_errors). That path deliberately does not set the
+        // global status, so it need not match uvm_global_get_status() here.
+        // uvm_gpu_set_broken() is only ever called with NV_ERR_RC_ERROR
+        // (nv_pci_error_detected in nv-pci.c).
+        UVM_ASSERT(status == uvm_global_get_status() || status == NV_ERR_RC_ERROR);
 
         // Just clear the tracker without printing anything extra. If one of the
         // entries from this tracker caused a channel error,
@@ -378,7 +388,12 @@ NV_STATUS uvm_tracker_wait_for_other_gpus(uvm_tracker_t *tracker, uvm_gpu_t *gpu
         uvm_tracker_remove_completed(tracker);
     }
     else {
-        UVM_ASSERT(status == uvm_global_get_status());
+        // WBX/AER: status may also originate from a per-GPU broken flag (see
+        // uvm_tracker_check_errors). That path deliberately does not set the
+        // global status, so it need not match uvm_global_get_status() here.
+        // uvm_gpu_set_broken() is only ever called with NV_ERR_RC_ERROR
+        // (nv_pci_error_detected in nv-pci.c).
+        UVM_ASSERT(status == uvm_global_get_status() || status == NV_ERR_RC_ERROR);
         uvm_tracker_clear(tracker);
     }
 
@@ -394,6 +409,31 @@ NV_STATUS uvm_tracker_check_errors(uvm_tracker_t *tracker)
         return status;
 
     for_each_tracker_entry(tracker_entry, tracker) {
+        uvm_gpu_t *entry_gpu = uvm_tracker_entry_gpu(tracker_entry);
+
+        //
+        // WBX/AER: per-GPU equivalent of the uvm_global_get_status() check above.
+        //
+        // Upstream relies on uvm_global_set_fatal_error() to break the spin in
+        // uvm_tracker_wait(): a GPU that stops retiring work sets the global
+        // status, check_errors() reports it, and every waiter unblocks. The AER
+        // per-GPU isolation deliberately does NOT set the global error (so one
+        // dead GPU cannot kill the others -- see nv_pci_error_detected() in
+        // nv-pci.c), but it never provided a replacement escape. The result is
+        // that a GPU which fell off the bus (Xid 79) leaves every waiter
+        // spinning forever in uvm_spin_loop(), holding the VA space lock, e.g.:
+        //   uvm_free -> uvm_va_range_destroy -> uvm_ext_gpu_map_destroy
+        //   -> uvm_page_table_range_vec_clear_ptes_gpu -> uvm_tracker_wait
+        // and likewise uvm_page_tree_wait() and uvm_tracker_wait_deinit().
+        //
+        // Reporting the broken GPU's status here restores that escape in
+        // per-GPU form: the waiter exits, uvm_tracker_wait() clears the tracker,
+        // and teardown proceeds instead of wedging. Healthy GPUs are unaffected
+        // (uvm_gpu_is_broken() == false -> byte-identical path).
+        //
+        if (entry_gpu != NULL && uvm_gpu_is_broken(entry_gpu))
+            return uvm_gpu_get_broken_status(entry_gpu);
+
         status = uvm_channel_check_errors(tracker_entry->channel);
         if (status != NV_OK)
             return status;

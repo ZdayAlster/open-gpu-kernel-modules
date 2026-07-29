@@ -3596,8 +3596,13 @@ void uvm_pmm_gpu_deinit(uvm_pmm_gpu_t *pmm)
             // This mirrors the cleanup path in split_gpu_chunk() on error.
             if (chunk->suballoc) {
                 uvm_pmm_gpu_chunk_suballoc_t *suballoc = chunk->suballoc;
-                NvU32 num_sub = (NvU32)1 << ilog2(suballoc->allocated +
-                                                   (suballoc->allocated - 1));
+                // WBX 修复: num_sub 必须是【真实分裂因子】num_subchunks(chunk)(=parent/child
+                // size)，与 suballoc 分配时用的 chunk_split_cache 索引一致；原先从 suballoc->
+                // allocated(当前已用子块数)推算，在"部分分配"时会偏小，导致 (1)高位存活子块漏
+                // free；(2)★把 suballoc 还进【错误尺寸的 chunk_split_cache】——cross-cache
+                // kmem_cache_free 破坏 SLAB freelist。此处 chunk 有 suballoc 即处于 IS_SPLIT,
+                // num_subchunks() 可安全调用(与正常释放路径 free_chunk 一致)。
+                size_t num_sub = num_subchunks(chunk);
                 size_t s;
 
                 for (s = 0; s < num_sub; s++) {

@@ -1446,6 +1446,27 @@ void uvm_gpu_va_space_unset_page_dir(uvm_gpu_va_space_t *gpu_va_space)
     if (gpu_va_space->did_set_page_directory) {
         NV_STATUS status;
 
+        //
+        // WBX/AER: RPC-free teardown for a broken (AER-excluded) GPU.
+        //
+        // The GPU has fallen off the bus (Xid 79) and been marked broken by
+        // uvm_gpu_broken_aer_entry(). Calling into RM here would:
+        //   (a) RPC to the dead GSP -> ~110s per-call timeout hang, and
+        //   (b) drive nvGpuOpsUnsetPageDirectory -> nvGpuOpsDisableVaSpaceChannels,
+        //       which walks this device's channel resource-ref tree in the gpuops
+        //       RM client. On a broken GPU that tree holds already-freed refs
+        //       (their kmalloc-1k slots get reused), so clientRefOrderedIterNext ->
+        //       mapFindLEQ dereferences a dangling node -> GPF -> panic=1 -> reboot.
+        //
+        // There are no live channels to disable on a dead GPU, so just drop our
+        // page-directory reference locally. Healthy GPUs are unaffected
+        // (uvm_gpu_is_broken() == false -> byte-identical path).
+        //
+        if (uvm_gpu_is_broken(gpu_va_space->gpu)) {
+            gpu_va_space->did_set_page_directory = false;
+            return;
+        }
+
         status = uvm_rm_locked_call(nvUvmInterfaceUnsetPageDirectory(gpu_va_space->duped_gpu_va_space));
         UVM_ASSERT_MSG(status == NV_OK,
                        "nvUvmInterfaceUnsetPageDirectory() failed: %s, GPU %s\n",
@@ -1497,7 +1518,18 @@ static void destroy_gpu_va_space(uvm_gpu_va_space_t *gpu_va_space)
     if (gpu_va_space->page_tables.root)
         uvm_page_tree_deinit(&gpu_va_space->page_tables);
 
-    if (gpu_va_space->duped_gpu_va_space)
+    //
+    // WBX/AER: RPC-free teardown for a broken (AER-excluded) GPU.
+    //
+    // nvUvmInterfaceAddressSpaceDestroy() frees the RM-side VA space via a GSP
+    // RPC, which hangs for ~110s on a dead GPU. Skip it for a broken GPU; the
+    // duped RM address space (and the rest of the excluded GPU's RM objects) is
+    // reclaimed later in nv_pci_remove(), matching the AER isolation design that
+    // intentionally defers RM-object teardown for excluded GPUs. Healthy GPUs
+    // are unaffected.
+    //
+    if (gpu_va_space->duped_gpu_va_space &&
+        !(gpu_va_space->gpu && uvm_gpu_is_broken(gpu_va_space->gpu)))
         uvm_rm_locked_call_void(nvUvmInterfaceAddressSpaceDestroy(gpu_va_space->duped_gpu_va_space));
 
     // If the state is DEAD, then this GPU VA space is tracked in

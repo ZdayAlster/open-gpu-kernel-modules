@@ -429,6 +429,37 @@ void uvm_pushbuffer_destroy(uvm_pushbuffer_t *pushbuffer)
 
     proc_remove(pushbuffer->procfs.info_file);
 
+    //
+    // WBX/AER: never free the pushbuffer of a broken (AER-excluded) GPU.
+    //
+    // Freeing here is only safe because uvm_channel_manager_destroy() is
+    // expected to have drained every channel first (channel_manager_destroy_pools).
+    // On a GPU that has fallen off the bus that drain can never complete --
+    // threads sit forever in uvm_tracker_wait()/uvm_spin_loop() waiting for
+    // pushes the dead GPU will never retire. Any thread still building a push
+    // keeps writing method/data pairs through the CPU VA taken from
+    // pushbuffer->memory (see uvm_pushbuffer.c get_base_cpu_va / push CPU va).
+    // Once this memory is freed and recycled by the slab allocator, those
+    // writes land on an unrelated live object. Observed twice on this box:
+    // ~4 KB of pushbuffer content scribbled over a live uvm_va_range_external_t,
+    // which later GPFs whoever walks that structure (uvm_range_tree_find /
+    // mapFindLEQ) -> panic=1 -> reboot.
+    //
+    // So leak it. This matches the AER isolation design, which already
+    // intentionally leaks RM/NVKMS objects for an excluded GPU (see
+    // nv_pci_error_detected() in nv-pci.c and the skip_rm_teardown path in
+    // nv.c); the memory is reclaimed when the device is finally removed.
+    // Healthy GPUs are unaffected (uvm_gpu_is_broken() == false).
+    //
+    if (pushbuffer->channel_manager != NULL &&
+        pushbuffer->channel_manager->gpu != NULL &&
+        uvm_gpu_is_broken(pushbuffer->channel_manager->gpu)) {
+        UVM_ERR_PRINT("GPU %s is broken: leaking pushbuffer instead of freeing it "
+                      "(in-flight pushes cannot drain on a dead GPU)\n",
+                      uvm_gpu_name(pushbuffer->channel_manager->gpu));
+        return;
+    }
+
     uvm_rm_mem_free(pushbuffer->memory_unprotected_sysmem);
     uvm_kvfree(pushbuffer->memory_protected_sysmem);
     uvm_rm_mem_free(pushbuffer->memory);
