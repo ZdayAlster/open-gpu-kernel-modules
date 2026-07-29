@@ -635,6 +635,49 @@ static void FreeDevice(struct NvKmsKapiDevice *device)
     nvKmsKapiFree(device);
 }
 
+/*
+ * AER-safe form of FreeDevice().
+ *
+ * Precondition: nvKmsKapiExcluded() has already run nvEvoSetDeviceExcluded()
+ * for this GPU, so every DMA push and channel poll on this pDevEvo
+ * short-circuits (nvEvoMakeRoom, nvEvoPollForEmptyChannel, nvDmaKickoffEvo and
+ * the EVO3/RM query loops all test pDevEvo->excluded).  With that in place the
+ * teardown below no longer waits on the dead GPU, so it is run rather than
+ * skipped -- the same reasoning that let rmapiDelPendingDevices() run
+ * unconditionally in RmShutdownAdapter() for a lost GPU.
+ *
+ * Skipping this teardown, as the AER path used to, is not a benign leak:
+ *
+ *   nvkms_close_gpu() is the matching put for the nvkms_open_gpu() taken in
+ *   nvKmsKapiAllocateDevice().  Without it nvl->usage_count never reaches
+ *   zero, so nv_stop_device() never runs for the isolated GPU -- its whole
+ *   GPU-lost fast path is dead -- and nv_pci_remove() then spins forever in
+ *   its "Attempting to remove device with non-zero usage count" wait loop,
+ *   which is what makes a sysfs remove appear to hang.
+ *
+ *   KmsFreeDevice() is what releases NVDevEvoRec (FreeDeviceReference() ->
+ *   nvFreeDevEvo()) and unlinks it from the global device list.  Leaving it
+ *   behind accumulates one stale NVDevEvoRec per isolate/rescan cycle, each
+ *   still carrying this gpuId in openedGpuIds[].  A later AER on the same GPU
+ *   would then mark a stale entry excluded while the live device keeps
+ *   spinning on frozen registers.
+ *
+ * RmFreeDevice() is a sequence of plain nvRmApiFree() calls; for an excluded
+ * GPU _kgspRpcSendMessage() returns NV_ERR_GPU_IS_LOST immediately and
+ * gpuSanityCheckRegisterAccess_IMPL() short-circuits every register access, so
+ * each free completes without touching the bus.
+ */
+static void FreeDeviceExcluded(struct NvKmsKapiDevice *device)
+{
+    if (device == NULL) {
+        return;
+    }
+
+    nvKmsKapiLogDeviceDebug(device, "Freeing AER-excluded device");
+
+    FreeDevice(device);
+}
+
 NvBool nvKmsKapiAllocateSystemMemory(struct NvKmsKapiDevice *device,
                                      NvU32 hRmHandle,
                                      enum NvKmsSurfaceMemoryLayout layout,
@@ -3933,8 +3976,8 @@ void nvKmsKapiRemove
 /*
  * nvKmsKapiExcluded - AER-safe variant of nvKmsKapiRemove().
  *
- * Invokes the removeExcluded callback if registered; falls back to the
- * regular remove callback otherwise (for callers that pre-date this API).
+ * Invokes the excluded callback if registered; falls back to the regular
+ * remove callback otherwise (for callers that pre-date this API).
  */
 void nvKmsKapiExcluded
 (
@@ -3942,10 +3985,11 @@ void nvKmsKapiExcluded
 )
 {
     /*
-     * WBX: Mark the NVKMS device as excluded BEFORE invoking the DRM
-     * removeExcluded callback.  This ensures that any concurrent NVKMS
-     * threads (timers, flips, etc.) will bail out of DMA push operations
-     * immediately instead of spinning on frozen GPU registers.
+     * WBX: Mark the NVKMS device as excluded BEFORE invoking the DRM excluded
+     * callback.  This ensures that any concurrent NVKMS threads (timers,
+     * flips, etc.) bail out of DMA push operations immediately instead of
+     * spinning on frozen GPU registers, and it is the precondition that makes
+     * freeDeviceExcluded() safe to run from that callback.
      */
     nvEvoSetDeviceExcluded(gpuId, NV_TRUE);
 
@@ -3953,55 +3997,13 @@ void nvKmsKapiExcluded
         if (pCallbacks->excluded) {
             pCallbacks->excluded(gpuId);
         } else {
-            /* Fallback: nvidia-drm is an older version without removeExcluded.
-             * Call remove() — note this may hang if the GPU is truly frozen,
-             * but it is better than leaving stale DRM state around. */
+            /* Fallback: nvidia-drm is an older version without the excluded
+             * callback.  Call remove() -- note this may hang if the GPU is
+             * truly frozen, but it is better than leaving stale DRM state
+             * around. */
             pCallbacks->remove(gpuId);
         }
     }
-}
-
-/*
- * nvKmsKapiRemoveExcluded - Clear the excluded state for a GPU device.
- *
- * @gpuId: The ID of the GPU to restore.
- *
- * Description:
- * This function is the inverse of nvKmsKapiExcluded(). It clears the
- * "excluded" flag for the specified GPU, allowing NVKMS to resume normal
- * operations such as mode setting and page flipping on this device.
- *
- * When a GPU is marked as excluded (typically due to an AER error or
- * hot-unplug event), NVKMS blocks new DMA pushes to prevent accessing
- * frozen or unavailable hardware registers. Calling this function
- * re-enables command submission to the GPU.
- *
- * Note:
- * Currently, this implementation only clears the internal exclusion flag
- * via nvEvoSetDeviceExcluded(). The callback notification to the DRM
- * layer (e.g., nvidia-drm) is currently disabled (#if 0), likely to
- * avoid complex synchronization issues during recovery or because
- * explicit notification is not required in the current architecture.
- */
-void nvKmsKapiRemoveExcluded
-(
-    NvU32 gpuId
-)
-{
-     /* Clear the exclusion flag to allow NVKMS to submit commands to this GPU again */
-    nvEvoSetDeviceExcluded(gpuId, NV_FALSE);
-#if 0
-     /* 
-     * Disabled code: If notification to the upper-layer driver (e.g., nvidia-drm)
-     * is needed in the future to indicate that the GPU is available again,
-     * the callback logic can be restored here.
-     */
-    if (pCallbacks) {
-        if (pCallbacks->removeExcluded) {
-            pCallbacks->removeExcluded(gpuId);
-        }
-    }
-#endif
 }
 
 void nvKmsKapiProbe
@@ -4087,6 +4089,7 @@ NvBool nvKmsKapiGetFunctionsTableInternal
 
     funcsTable->allocateDevice = AllocateDevice;
     funcsTable->freeDevice     = FreeDevice;
+    funcsTable->freeDeviceExcluded = FreeDeviceExcluded;
 
     funcsTable->grabOwnership    = GrabOwnership;
     funcsTable->releaseOwnership = ReleaseOwnership;

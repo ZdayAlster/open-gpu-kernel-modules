@@ -73,8 +73,6 @@ typedef struct {
      * May be NULL; if so, nvidia_modeset_remove() is used as a fallback.
      */
     void (*excluded)(NvU32 gpu_id);
-    /*Clear the excluded state for a GPU device.*/
-    void (*remove_excluded)(NvU32 gpu_id);
 
     /* Probe callback, called when a device is being hotplugged. */
     void (*probe)(const nv_gpu_info_t *gpu_info);

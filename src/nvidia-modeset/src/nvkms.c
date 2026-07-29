@@ -6845,43 +6845,56 @@ void nvKmsResume(NvU32 gpuId)
  *               normal operations.
  *
  * Description:
- * Iterates the global device list and sets the 'excluded' flag on the matching
- * NVDevEvoRec.
+ * Iterates the global device list and sets the 'excluded' flag on every
+ * NVDevEvoRec that has this GPU open.
  *
  * - When excluded (is_excluded == NV_TRUE): All subsequent DMA push operations
  *   (nvEvoMakeRoom, nvEvoPollForEmptyChannel, nvDmaKickoffEvo) will bail out
- *   immediately instead of spinning on frozen GPU registers. This is typically
- *   called from the PCIe AER error_detected path.
+ *   immediately instead of spinning on frozen GPU registers. This is called
+ *   from the PCIe AER error_detected path, and is the precondition that makes
+ *   the excluded device safe to free.
  *
  * - When cleared (is_excluded == NV_FALSE): Normal DMA push operations are
- *   resumed. This is typically called during error recovery or when the device
- *   is re-enabled.
+ *   resumed.
+ *
+ * Note the loop deliberately does not stop at the first match.  A single gpuId
+ * can appear in more than one NVDevEvoRec if an earlier teardown for this GPU
+ * did not complete; marking only the first one found would leave the live
+ * device unmarked and still spinning on frozen registers, which is precisely
+ * the hang this flag exists to prevent.
  */
 void nvEvoSetDeviceExcluded(NvU32 gpuId, NvBool is_excluded)
 {
     NVDevEvoPtr pDevEvo;
     NvU32 i;
+    NvBool found = FALSE;
 
     FOR_ALL_EVO_DEVS(pDevEvo) {
         for (i = 0; i < ARRAY_LEN(pDevEvo->openedGpuIds); i++) {
-            if (pDevEvo->openedGpuIds[i] == gpuId) {
-                if (is_excluded) {
-			nvEvoLogDev(pDevEvo, EVO_LOG_ERROR,
-					"GPU excluded due to fatal PCIe AER; "
-					"all DMA push operations will be no-ops");
-                } else {
-			nvEvoLogDev(pDevEvo, EVO_LOG_INFO,
-				       	"GPU exclusion cleared; "
-					"DMA push operations resumed");
-		}
-		pDevEvo->excluded = is_excluded;
-                return;
+            if (pDevEvo->openedGpuIds[i] != gpuId) {
+                continue;
             }
+
+            if (is_excluded) {
+                nvEvoLogDev(pDevEvo, EVO_LOG_ERROR,
+                            "GPU excluded due to fatal PCIe AER; "
+                            "all DMA push operations will be no-ops");
+            } else {
+                nvEvoLogDev(pDevEvo, EVO_LOG_INFO,
+                            "GPU exclusion cleared; "
+                            "DMA push operations resumed");
+            }
+
+            pDevEvo->excluded = is_excluded;
+            found = TRUE;
+            break;
         }
     }
 
-    nvEvoLog(EVO_LOG_WARN,
-        "nvEvoSetDeviceExcluded: gpuId 0x%x not found", gpuId);
+    if (!found) {
+        nvEvoLog(EVO_LOG_WARN,
+                 "nvEvoSetDeviceExcluded: gpuId 0x%x not found", gpuId);
+    }
 }
 
 static void ServiceOneDeferredRequestFifo(

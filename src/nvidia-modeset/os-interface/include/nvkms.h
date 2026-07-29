@@ -105,7 +105,6 @@ NvBool nvKmsKapiGetFunctionsTableInternal
 
 void nvKmsKapiSuspendResume(NvBool suspend);
 void nvKmsKapiRemove(NvU32 gpuId);
-void nvKmsKapiRemoveExcluded(NvU32 gpuId);
 void nvKmsKapiExcluded(NvU32 gpuId);
 void nvEvoSetDeviceExcluded(NvU32 gpuId, NvBool is_excluded);
 void nvKmsKapiProbe(const nv_gpu_info_t *gpu_info);

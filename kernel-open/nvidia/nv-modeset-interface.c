@@ -100,31 +100,6 @@ void nvidia_modeset_excluded(NvU32 gpuId)
     }
 }
 
-/*
- * nvidia_modeset_remove_excluded - Clear the excluded state for a GPU device.
- *
- * @gpuId: The ID of the GPU to restore.
- *
- * Description:
- * This function is the inverse of nvidia_modeset_excluded(). It invokes the
- * 'remove_excluded' callback if registered, signaling that the GPU has recovered
- * from an error state (e.g., PCIe AER) and is available for normal display
- * operations again.
- *
- * Unlike nvidia_modeset_excluded(), this function does not fall back to the
- * standard 'remove' callback, as the device is being restored rather than removed.
- */
-void nvidia_modeset_remove_excluded(NvU32 gpuId)
-{
-    if (nv_modeset_callbacks)
-    {
-        if (nv_modeset_callbacks->remove_excluded)
-        {
-            nv_modeset_callbacks->remove_excluded(gpuId);
-        }
-    }
-}
-
 static void nvidia_modeset_get_gpu_info(nv_gpu_info_t *gpu_info,
                                         const nv_linux_state_t *nvl)
 {

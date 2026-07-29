@@ -603,19 +603,18 @@ struct NvKmsKapiCallbacks {
     void (*suspendResume)(NvBool suspend);
     void (*remove)(NvU32 gpuId);
     /*
-     * removeExcluded - AER-safe variant of remove().
+     * excluded - AER-safe variant of remove().
      *
      * Called from the PCIe AER error_detected (pci_channel_io_frozen) path
      * when the GPU has been marked excluded.  Because the GPU MMIO is frozen,
-     * any GSP RPC issued during teardown will hang indefinitely.  This callback
-     * must therefore only perform DRM-layer cleanup (cancel delayed work, clean
-     * up mode config, drm_dev_unplug) and must NOT call declareEventInterest(),
-     * freeDevice(), releaseOwnership(), or drm_atomic_helper_shutdown().
+     * any GSP RPC issued during teardown would hang indefinitely, so this
+     * callback must not call declareEventInterest(), releaseOwnership() or
+     * drm_atomic_helper_shutdown().  It must still release the device via
+     * freeDeviceExcluded(), which is the AER-safe form of freeDevice().
      *
      * May be NULL; if so, remove() is called as a fallback (which is safe only
      * when the GPU is not actually frozen at the time of the call).
      */
-    void (*removeExcluded)(NvU32 gpuId);
     void (*excluded)(NvU32 gpuId);
     void (*probe)(const struct NvKmsKapiGpuInfo *gpu_info);
 };
@@ -670,6 +669,22 @@ struct NvKmsKapiFunctionsTable {
      *                      This function is a no-op if device is not valid.
      */
     void (*freeDevice)(struct NvKmsKapiDevice *device);
+
+    /*!
+     * AER-safe form of freeDevice(), for a device whose GPU has fallen off the
+     * bus and been marked excluded.
+     *
+     * Requires that nvEvoSetDeviceExcluded(gpuId, NV_TRUE) has already run, so
+     * that every DMA push and channel poll on this device short-circuits
+     * instead of waiting on hardware that will never respond.  Given that, the
+     * full teardown completes without a PCIe transaction and must be performed
+     * rather than skipped -- notably it is the only path that drops NVKMS's
+     * reference on the GPU.
+     *
+     * \param [in]  device  A device returned by allocateDevice().
+     *                      This function is a no-op if device is not valid.
+     */
+    void (*freeDeviceExcluded)(struct NvKmsKapiDevice *device);
 
     /*!
      * Grab ownership of device, ownership is required to do modeset.

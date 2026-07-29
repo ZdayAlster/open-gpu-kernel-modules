@@ -1190,8 +1190,11 @@ typedef struct _NVEvoDevRec {
      *   nvEvoIsCoreNotifierComplete(), nvEvoWaitForCoreNotifier()
      *   nvEvoWaitForCRC32Notifier(), WaitForFreeSpace()
      *
-     * Set by nvKmsKapiExcluded() → DRM removeExcluded callback chain.
-     * Not cleared until the device is fully removed and re-probed.
+     * Set by nvKmsKapiExcluded() before it invokes the DRM excluded callback,
+     * so that the teardown that callback performs -- including
+     * freeDeviceExcluded() -- runs without waiting on the dead GPU.  It is
+     * therefore never cleared: this NVDevEvoRec is freed by that teardown, and
+     * the GPU comes back as a fresh device on re-probe.
      */
     NvBool excluded;
 
