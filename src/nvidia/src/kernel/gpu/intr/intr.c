@@ -130,33 +130,13 @@ intrServiceStall_IMPL(OBJGPU *pGpu, Intr *pIntr)
         // GPU is recovered.
         //
 
-        //
-        // WBX/AER: software-state checks first, register read second.
-        //
-        // This is the same reordering f908ab98 applied to
-        // _intrServiceStallCommonCheckBegin() ("Fix A"), which was never
-        // carried over to this function.  Reading PMC_BOOT_0 before the sanity
-        // checks means an already-known-lost GPU touches the bus and logs
-        // "Failed GPU reg read" on *every* deferred DPC before finally exiting
-        // below -- one more flood on the same path that already cost us a log
-        // buffer.  With the checks first, a GPU RM knows is gone exits
-        // silently, and the register read is only reached when RM still
-        // believes the device is fine.
-        //
-        if (!API_GPU_ATTACHED_SANITY_CHECK(pGpu))
-        {
-            goto exit;
-        }
-
-        if (API_GPU_IN_RESET_SANITY_CHECK(pGpu))
-        {
-            goto exit;
-        }
-
         NvU32 regReadValue = GPU_REG_RD32(pGpu, NV_PMC_BOOT_0);
 
         if (regReadValue == GPU_REG_VALUE_INVALID)
         {
+            NV_PRINTF(LEVEL_ERROR,
+                      "Failed GPU reg read : 0x%x. Check whether GPU is present on the bus\n",
+                      regReadValue);
             //
             // WBX/AER: bail out, do not just log.
             //
@@ -164,7 +144,7 @@ intrServiceStall_IMPL(OBJGPU *pGpu, Intr *pIntr)
             // further processing ... avoid all ISR DPC processing till GPU is
             // recovered"), but the code only printed and fell through.
             //
-            // The sanity checks above read RM's software state, which does
+            // The sanity checks below read RM's software state, which does
             // eventually catch an isolated GPU -- measured on 2026-07-31, MMIO
             // stops returning the right chip ID as soon as the channel is
             // frozen, so osHandleGpuLost() clears IS_CONNECTED about 43 ms
@@ -188,14 +168,16 @@ intrServiceStall_IMPL(OBJGPU *pGpu, Intr *pIntr)
             // link failure, an error that did not come through our AER
             // handler), and a hang is fatal regardless of the reason.
             //
-            // Reaching here means RM still believed the device was present, so
-            // the read-back is genuinely unexpected and worth ERROR; once
-            // IS_CONNECTED is cleared the checks above exit silently and this
-            // no longer floods.
-            //
-            NV_PRINTF(LEVEL_ERROR,
-                      "Failed GPU reg read : 0x%x. Check whether GPU is present on the bus\n",
-                      regReadValue);
+            goto exit;
+        }
+
+        if (!API_GPU_ATTACHED_SANITY_CHECK(pGpu))
+        {
+            goto exit;
+        }
+
+        if (API_GPU_IN_RESET_SANITY_CHECK(pGpu))
+        {
             goto exit;
         }
     }

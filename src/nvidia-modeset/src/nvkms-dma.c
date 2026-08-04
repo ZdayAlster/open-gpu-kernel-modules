@@ -195,10 +195,26 @@ void nvEvoMakeRoom(NVEvoChannelPtr pChannel, NvU32 count)
      * already queued is correct -- nvDmaKickoffEvo() also bails out when
      * excluded, so none of it would ever have been submitted -- and it keeps
      * every subsequent write inside the buffer.
+     *
+     * The count matches how the channel is first set up in nvRmAllocEvoChannel()
+     * ((offset_max >> 2) - 2, not the full offset_max >> 2), so the empty state
+     * produced here is exactly the one the rest of this file already reasons
+     * about.
+     *
+     * Unlike the normal exit from the loop below, which breaks only once
+     * fifo_free_count > count, this path hands back a fixed quota without
+     * comparing it to what the caller asked for.  That is safe because the
+     * quota is the whole buffer (1010 dwords for the 4 KB pushbuffer minus its
+     * 12-dword hardware pad) and no caller in this driver requests anywhere
+     * near it: every nvDmaSetStartEvoMethod() in nvidia-modeset passes a count
+     * of 1, 2, 4 or 12, so countPlusHeader tops out at 13.  The assert pins
+     * that down, since it is a property of the callers rather than of anything
+     * enforced here.
      */
     if (push_buffer->pDevEvo->excluded) {
         push_buffer->buffer = push_buffer->base;
-        push_buffer->fifo_free_count = push_buffer->offset_max >> 2;
+        push_buffer->fifo_free_count = (push_buffer->offset_max >> 2) - 2;
+        nvAssert(count < push_buffer->fifo_free_count);
         return;
     }
 
@@ -221,11 +237,13 @@ void nvEvoMakeRoom(NVEvoChannelPtr pChannel, NvU32 count)
          * Reset the channel on the way out for the same reason as the check at
          * the top of this function: the caller writes through push_buffer
          * regardless of what we return, so leaving the pointer where it is
-         * lets it run off the end of the buffer.
+         * lets it run off the end of the buffer.  See there for why the quota
+         * is handed back without comparing it to count.
          */
         if (push_buffer->pDevEvo->excluded) {
             push_buffer->buffer = push_buffer->base;
-            push_buffer->fifo_free_count = push_buffer->offset_max >> 2;
+            push_buffer->fifo_free_count = (push_buffer->offset_max >> 2) - 2;
+            nvAssert(count < push_buffer->fifo_free_count);
             return;
         }
 
