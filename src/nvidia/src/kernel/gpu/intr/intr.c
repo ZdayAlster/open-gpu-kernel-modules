@@ -130,15 +130,19 @@ intrServiceStall_IMPL(OBJGPU *pGpu, Intr *pIntr)
         // GPU is recovered.
         //
 
-        NvU32 regReadValue = GPU_REG_RD32(pGpu, NV_PMC_BOOT_0);
-
-        if (regReadValue == GPU_REG_VALUE_INVALID)
-        {
-            NV_PRINTF(LEVEL_ERROR,
-                      "Failed GPU reg read : 0x%x. Check whether GPU is present on the bus\n",
-                      regReadValue);
-        }
-
+        //
+        // WBX/AER: software-state checks first, register read second.
+        //
+        // This is the same reordering f908ab98 applied to
+        // _intrServiceStallCommonCheckBegin() ("Fix A"), which was never
+        // carried over to this function.  Reading PMC_BOOT_0 before the sanity
+        // checks means an already-known-lost GPU touches the bus and logs
+        // "Failed GPU reg read" on *every* deferred DPC before finally exiting
+        // below -- one more flood on the same path that already cost us a log
+        // buffer.  With the checks first, a GPU RM knows is gone exits
+        // silently, and the register read is only reached when RM still
+        // believes the device is fine.
+        //
         if (!API_GPU_ATTACHED_SANITY_CHECK(pGpu))
         {
             goto exit;
@@ -146,6 +150,52 @@ intrServiceStall_IMPL(OBJGPU *pGpu, Intr *pIntr)
 
         if (API_GPU_IN_RESET_SANITY_CHECK(pGpu))
         {
+            goto exit;
+        }
+
+        NvU32 regReadValue = GPU_REG_RD32(pGpu, NV_PMC_BOOT_0);
+
+        if (regReadValue == GPU_REG_VALUE_INVALID)
+        {
+            //
+            // WBX/AER: bail out, do not just log.
+            //
+            // This is what the comment above already asks for ("To prevent
+            // further processing ... avoid all ISR DPC processing till GPU is
+            // recovered"), but the code only printed and fell through.
+            //
+            // The sanity checks above read RM's software state, which does
+            // eventually catch an isolated GPU -- measured on 2026-07-31, MMIO
+            // stops returning the right chip ID as soon as the channel is
+            // frozen, so osHandleGpuLost() clears IS_CONNECTED about 43 ms
+            // after the AER handler runs ("Xid 79, GPU has fallen off the bus"
+            // at t=5384.4218 against "marking as excluded" at t=5384.3822).
+            // But that leaves a window in which the checks still pass while
+            // every register read already returns 0xFFFFFFFF, and entering the
+            // drain loop below during that window is unrecoverable: the loop
+            // never re-tests GPU state, intrGetPendingStall_HAL() keeps
+            // reporting every engine pending off the all-ones reads, and the
+            // threaded IRQ handler stops returning to
+            // irq_wait_for_interrupt() -- the only place kthread_should_stop()
+            // is tested -- so free_irq()'s kthread_stop() blocks forever.  A
+            // later IS_CONNECTED change does not rescue a loop already spinning.
+            //
+            // Deliberately NOT gated on osIsGpuExcluded(): suppressing a
+            // diagnostic should be scoped to the case we know is expected (as
+            // done at the two assertion sites below), but a guard against an
+            // unterminated loop must not be -- a GPU can stop answering for
+            // reasons that never set NV_FLAG_EXCLUDE (surprise removal, a real
+            // link failure, an error that did not come through our AER
+            // handler), and a hang is fatal regardless of the reason.
+            //
+            // Reaching here means RM still believed the device was present, so
+            // the read-back is genuinely unexpected and worth ERROR; once
+            // IS_CONNECTED is cleared the checks above exit silently and this
+            // no longer floods.
+            //
+            NV_PRINTF(LEVEL_ERROR,
+                      "Failed GPU reg read : 0x%x. Check whether GPU is present on the bus\n",
+                      regReadValue);
             goto exit;
         }
     }
@@ -1645,7 +1695,40 @@ intrServiceStallList_IMPL
     NvBool              bPending;
     CALL_CONTEXT       *pOldContext = NULL;
 
-    NV_ASSERT_OK_OR_ELSE(status, _intrServiceStallCommonCheckBegin(pGpu, pIntr, &pOldContext), return);
+    //
+    // WBX/AER: do not assert on NV_ERR_GPU_IS_LOST here.
+    //
+    // f908ab98 reverted an earlier silent-return on the reasoning that
+    // NV_ASSERT_OK_OR_ELSE "only adds a one-line assertion log" and therefore
+    // costs nothing.  That is true per call, but this path runs once per
+    // deferred DPC, and an AER-isolated GPU keeps generating them: measured at
+    // 2-3 us intervals, i.e. ~65 MB/s of kernel log.  Every AER isolation
+    // therefore wipes the entire log ring buffer -- with log_buf_len=16M, a
+    // dump taken afterwards held 9.6 KB of real content and 16 MB of this one
+    // line.  That is what left the 2026-07-30 panic vmcore with only 7.6
+    // seconds of history and destroyed 3.5 hours of NVRM logs from a 15-cycle
+    // isolate/recover run.
+    //
+    // The suppression is keyed on this component's own isolation flag rather
+    // than on the status code.  _intrServiceStallCommonCheckBegin() returns
+    // NV_ERR_GPU_IS_LOST for two different conditions -- GPU detached and GPU
+    // in reset -- and only the former, when it is *our* AER isolation, is the
+    // high-frequency expected case.  osIsGpuExcluded() reads NV_FLAG_EXCLUDE,
+    // set synchronously by nv_pci_error_detected(); it is a plain flag test
+    // with no locking, so it is safe at DPC level.  Every other failure,
+    // including a genuine reset or detach that did not come from AER
+    // isolation, still asserts exactly as before -- which is the diagnostic
+    // value f908ab98 wanted to keep.
+    //
+    status = _intrServiceStallCommonCheckBegin(pGpu, pIntr, &pOldContext);
+    if (status != NV_OK)
+    {
+        if (!osIsGpuExcluded(pGpu))
+        {
+            NV_ASSERT_OK_FAILED("_intrServiceStallCommonCheckBegin", status);
+        }
+        return;
+    }
 
     do
     {
@@ -1698,7 +1781,17 @@ intrServiceStallSingle_IMPL
     bitVectorClrAll(&engines);
     bitVectorSet(&engines, engIdx);
 
-    NV_ASSERT_OK_OR_ELSE(status, _intrServiceStallCommonCheckBegin(pGpu, pIntr, &pOldContext), return);
+    // WBX/AER: see intrServiceStallList_IMPL() for why an AER-excluded GPU must
+    // not assert here.  Same path, same per-DPC frequency, same log flood.
+    status = _intrServiceStallCommonCheckBegin(pGpu, pIntr, &pOldContext);
+    if (status != NV_OK)
+    {
+        if (!osIsGpuExcluded(pGpu))
+        {
+            NV_ASSERT_OK_FAILED("_intrServiceStallCommonCheckBegin", status);
+        }
+        return;
+    }
 
     do
     {

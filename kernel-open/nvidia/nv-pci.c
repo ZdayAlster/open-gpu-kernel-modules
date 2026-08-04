@@ -2684,6 +2684,70 @@ nv_pci_error_detected(struct pci_dev *pdev, pci_channel_state_t state)
         UNLOCK_NV_LINUX_DEVICES();
 
         /*
+         * WBX/AER: stop the GPU from mastering the bus, right now.
+         *
+         * Marking the GPU excluded only changes what the *driver* will do with
+         * it.  Nothing here ever told the *device* to stop, and on this path it
+         * does not stop on its own: aer-inject delivers an AER error message
+         * while the physical link stays up, so the GSP keeps running and keeps
+         * driving its sysmem queues.  Measured on 5090Dv2: one DMA read of a
+         * fixed queue address plus writes rotating over four pages, every 5.0
+         * seconds, continuing for as long as the GPU stays bound.
+         *
+         * Meanwhile RM teardown proceeds and releases the pages behind those
+         * addresses, and iovaspaceDestruct() abandons whatever IOVA mappings
+         * are still live ("N left-over mappings in IOVAS 0x...") rather than
+         * unmapping them.  With the IOMMU in passthrough (iommu=pt) an IOVA is
+         * just a physical address, so a page that is recycled while the device
+         * still holds a mapping for it is reachable by that device.
+         *
+         * Scope note (2026-08-03): this was originally written believing that
+         * mechanism caused the 07-30/07-31/08-01 memory corruption.  It did
+         * not.  The 08-03 vmcore identified the writer as the CPU: on an
+         * AER-excluded GPU nvEvoMakeRoom() returned early without wrapping the
+         * EVO push buffer, so nvidia-modeset walked its write pointer off the
+         * end of the buffer (fixed in src/nvidia-modeset/src/nvkms-dma.c).
+         * What is written below therefore stands on its own footing, not on
+         * that corruption: leaving an isolated device bus-mastering is simply
+         * wrong, and it was measured to be real.  On 5090Dv2 the IIO uncore
+         * counters put the isolated GPU at < 43 B/s after this call against a
+         * 22 KB/s idle baseline, and DMAR faults went from 398 to 0.
+         *
+         * pci_clear_master() clears the bus-master enable bit and ends this at
+         * the source.  It is a config write, so only attempt it while the
+         * device still answers config cycles -- on a genuinely dead link the
+         * read-back would be all-ones and we would write garbage into the
+         * command register.  When it cannot be done, containment falls to the
+         * IOMMU; note the customer declined intel_iommu=on as a prerequisite,
+         * so on this deployment (iommu=pt) that fallback does not exist and
+         * this call is the only thing stopping the device.
+         *
+         * Order matters: this must happen before any teardown that releases
+         * DMA-mapped pages.  Unmapping first while the device is still
+         * mastering would only make the window worse.
+         */
+        /* pci_clear_master is not defined for !CONFIG_PCI; see nv_pci_shutdown */
+#ifdef CONFIG_PCI
+        if (pci_device_is_present(pdev))
+        {
+            pci_clear_master(pdev);
+            nv_printf(NV_DBG_ERRORS,
+                      "NVRM: GPU %04x:%02x:%02x.%x bus mastering disabled after AER fatal\n",
+                      NV_PCI_DOMAIN_NUMBER(pdev), NV_PCI_BUS_NUMBER(pdev),
+                      NV_PCI_SLOT_NUMBER(pdev), PCI_FUNC(pdev->devfn));
+        }
+        else
+        {
+            nv_printf(NV_DBG_ERRORS,
+                      "NVRM: GPU %04x:%02x:%02x.%x not answering config cycles, "
+                      "cannot disable bus mastering; relying on the IOMMU to "
+                      "contain any further DMA\n",
+                      NV_PCI_DOMAIN_NUMBER(pdev), NV_PCI_BUS_NUMBER(pdev),
+                      NV_PCI_SLOT_NUMBER(pdev), PCI_FUNC(pdev->devfn));
+        }
+#endif
+
+        /*
          * Notify nvidia-modeset to release this GPU using the AER-safe path.
          *
          * nvidia_modeset_excluded() routes to nv_drm_excluded()

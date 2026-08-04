@@ -161,12 +161,44 @@ void nvEvoMakeRoom(NVEvoChannelPtr pChannel, NvU32 count)
     const NvU64 timeout = 5000000; /* 5 seconds */
 
     /*
-     * WBX: If the GPU is excluded due to AER fatal error, bail out
-     * immediately. Otherwise the busy-wait loop below will spin forever
-     * trying to read frozen PCI registers, printing the error message
-     * every 5 seconds and preventing clean shutdown.
+     * WBX/AER: the GPU is excluded, so there is nobody to consume the push
+     * buffer and nothing to wait for -- the busy-wait loop below would spin
+     * forever on frozen PCI registers.  But we must not simply return.
+     *
+     * nvDmaSetStartEvoMethod() treats this function as advisory and writes
+     * unconditionally afterwards:
+     *
+     *     if (p->fifo_free_count <= countPlusHeader)
+     *         nvEvoMakeRoom(pChannel, countPlusHeader);
+     *     nvDmaSetEvoMethodData(...);        // *p->buffer = data; p->buffer++;
+     *     p->fifo_free_count -= countPlusHeader;
+     *
+     * Returning before the wrap check below, and without refreshing
+     * fifo_free_count, therefore does two fatal things:
+     *
+     *   1. p->buffer keeps advancing past base + offset_max, so the method
+     *      dwords land in whatever the page allocator placed after the push
+     *      buffer.  On 2026-08-03 that was a direct-map PTE table: the entry
+     *      became 0x000b901b00043a14, which is {R13, RBP} of
+     *      InitTaps5ScalerCoefficientsC9 -- two consecutive EVO method dwords.
+     *      The next kernel write to that page took a not-present fault and
+     *      panicked.  The 2026-07-30 (direct-map PTE table), 07-31
+     *      (kmalloc-16 freelist) and 08-01 (nv_page_pool_entry_t) crashes
+     *      carry the same 0x000b....0004..14 signature and are the same bug.
+     *
+     *   2. fifo_free_count is NvU32, so the subtraction above underflows to
+     *      ~4e9.  The "<=" test never fires again, this function is never
+     *      called again, and the runaway is permanent for the life of the
+     *      channel.
+     *
+     * Reset the channel to the empty state instead.  Discarding whatever is
+     * already queued is correct -- nvDmaKickoffEvo() also bails out when
+     * excluded, so none of it would ever have been submitted -- and it keeps
+     * every subsequent write inside the buffer.
      */
     if (push_buffer->pDevEvo->excluded) {
+        push_buffer->buffer = push_buffer->base;
+        push_buffer->fifo_free_count = push_buffer->offset_max >> 2;
         return;
     }
 
@@ -182,11 +214,18 @@ void nvEvoMakeRoom(NVEvoChannelPtr pChannel, NvU32 count)
 
     while (1) {
         /*
-         * WBX: Re-check excluded inside the loop.  AER error may be detected
-         * while this thread is already spinning inside the loop.  Without this
-         * check, the loop never terminates because the GPU is frozen.
+         * WBX/AER: Re-check excluded inside the loop.  The AER error may be
+         * detected while this thread is already spinning here, and without
+         * this check the loop never terminates because the GPU is frozen.
+         *
+         * Reset the channel on the way out for the same reason as the check at
+         * the top of this function: the caller writes through push_buffer
+         * regardless of what we return, so leaving the pointer where it is
+         * lets it run off the end of the buffer.
          */
         if (push_buffer->pDevEvo->excluded) {
+            push_buffer->buffer = push_buffer->base;
+            push_buffer->fifo_free_count = push_buffer->offset_max >> 2;
             return;
         }
 

@@ -1741,8 +1741,27 @@ static int nv_open_device(nv_state_t *nv, nvidia_stack_t *sp)
     nv_linux_state_t *nvl = NV_GET_NVL_FROM_NV_STATE(nv);
     int rc;
     NV_STATUS status;
-    
-    NV_DEV_PRINTF(NV_DBG_ERRORS, nv, "open device start.........\n");
+
+    /*
+     * WBX: the trace prints in this function are NV_DBG_INFO, not
+     * NV_DBG_ERRORS.
+     *
+     * nv_open_device() runs once per /dev/nvidiaN open.  A vllm serve with
+     * tensor parallelism plus nvidia-persistenced opens each device hundreds
+     * of times in a burst, and at NV_DBG_ERRORS every one of those emitted
+     * five lines unconditionally -- measured at several hundred lines per
+     * 30 ms.  That flood evicts the kernel log ring buffer: the vmcore from
+     * the 2026-07-30 reboot retained only the last 7.6 seconds before the
+     * panic, destroying the NVRM history of a 3.5 hour, 15-cycle AER
+     * isolate/recover run at exactly the moment it was needed.
+     *
+     * NV_DBG_INFO (0x0) is below the default threshold of NV_DBG_WARNINGS
+     * (cur_debuglevel 0xffffffff -> (0xffffffff >> 4) & 0x3 == 3), so these
+     * are silent unless deliberately enabled with
+     * NVreg_ResmanDebugLevel=0.  The genuine error paths below stay at
+     * NV_DBG_ERRORS: they fire at most once per failed open.
+     */
+    NV_DEV_PRINTF(NV_DBG_INFO, nv, "open device start.........\n");
 
     if ((nv->flags & NV_FLAG_PCI_REMOVE_IN_PROGRESS) != 0)
     {
@@ -1771,7 +1790,7 @@ static int nv_open_device(nv_state_t *nv, nvidia_stack_t *sp)
         }
     }
 
-    NV_DEV_PRINTF(NV_DBG_ERRORS, nv, "Opening GPU with minor number %d\n",
+    NV_DEV_PRINTF(NV_DBG_INFO, nv, "Opening GPU with minor number %d\n",
                   nvl->minor_num);
 
     status = nv_check_gpu_state(nv);
@@ -1781,7 +1800,7 @@ static int nv_open_device(nv_state_t *nv, nvidia_stack_t *sp)
         return -ENODEV;
     }
     
-    NV_DEV_PRINTF(NV_DBG_ERRORS, nv, " being open.............\n");
+    NV_DEV_PRINTF(NV_DBG_INFO, nv, " being open.............\n");
 
     if ( ! (nv->flags & NV_FLAG_OPEN))
     {
@@ -1794,7 +1813,7 @@ static int nv_open_device(nv_state_t *nv, nvidia_stack_t *sp)
             WARN_ON(1);
             return -EBUSY;
         }
-        NV_DEV_PRINTF(NV_DBG_ERRORS, nv, " start device.............\n");
+        NV_DEV_PRINTF(NV_DBG_INFO, nv, " start device.............\n");
 
         rc = nv_start_device(nv, sp);
         if (rc != 0){
@@ -1817,12 +1836,12 @@ static int nv_open_device(nv_state_t *nv, nvidia_stack_t *sp)
         return -EBUSY;
     }
         
-    NV_DEV_PRINTF(NV_DBG_ERRORS, nv, " nv_assert_not_in_gpu_exclusion_list.\n");
+    NV_DEV_PRINTF(NV_DBG_INFO, nv, " nv_assert_not_in_gpu_exclusion_list.\n");
 
     nv_assert_not_in_gpu_exclusion_list(sp, nv);
 
     atomic64_inc(&nvl->usage_count);
-    NV_DEV_PRINTF(NV_DBG_ERRORS, nv, "Opening GPU with minor number %d success.\n",
+    NV_DEV_PRINTF(NV_DBG_INFO, nv, "Opening GPU with minor number %d success.\n",
                   nvl->minor_num);
 
     return 0;
@@ -2597,7 +2616,27 @@ static int nvidia_read_card_info(nv_ioctl_card_info_t *ci, size_t num_entries)
             ci[i].fb_address         = nv->fb->cpu_address;
             ci[i].fb_size            = nv->fb->size;
         }
-	 NV_DEV_PRINTF(NV_DBG_ERRORS, nv,"dong read card info GPU:%0x\n",ci[i].pci_info.bus);
+        /*
+         * WBX: NV_DBG_INFO, not NV_DBG_ERRORS.
+         *
+         * This is inside the per-GPU loop of nvidia_read_card_info(), which
+         * implements the NV_ESC_CARD_INFO ioctl.  Every client enumerates the
+         * cards on startup -- nvidia-smi, each CUDA process, vllm, the
+         * container runtime hook, nvidia-persistenced -- so one burst of eight
+         * lines is emitted per call, and the test suite drives hundreds of
+         * such calls per case.  In the 2026-08-03 capture these lines are the
+         * bulk of the kernel log, which is the same problem that left the
+         * 07-30 panic vmcore with only 7.6 seconds of NVRM history: the signal
+         * we actually need at crash time gets pushed out by enumeration
+         * chatter.
+         *
+         * NV_DBG_INFO is below the default threshold, so this is silent unless
+         * deliberately enabled with NVreg_ResmanDebugLevel=0.  The genuine
+         * anomaly on this path -- "GPU not present on bus, skipping" above --
+         * stays at NV_DBG_ERRORS.
+         */
+        NV_DEV_PRINTF(NV_DBG_INFO, nv, "dong read card info GPU:%0x\n",
+                      ci[i].pci_info.bus);
         i++;
     }
 
